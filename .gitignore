@@ -1,0 +1,12 @@
+.DS_Store
+
+# Supabase
+.branches
+.temp
+.env.*
+
+.vscode
+jsconfig.json
+tsconfig.json
+.prettierrc.json
+test*

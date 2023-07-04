@@ -1,6 +1,8 @@
-# Master Debater API
+# Master Debater AI
 
-Welcome to **Master Debater API**, a groundbreaking platform that puts your debating skills to the test. Are your opinions well-formed? Can you defend them effectively? Master Debater will challenge you. If you find yourself struggling, it may be time to approach discussions with a more open mind.
+> [MasterDebater.AI](masterdebater.ai).
+
+Welcome to **Master Debater AI**, a groundbreaking platform that puts your debating skills to the test. Are your opinions well-formed? Can you defend them effectively? Master Debater will challenge you. If you find yourself struggling, it may be time to approach discussions with a more open mind.
 
 ## Why Master Debater?
 

@@ -1,10 +1,10 @@
-# Master Debater AI
+# DebateAI.Org
 
-> [MasterDebater.AI](masterdebater.ai).
+> [DebateAI.Org](DebateAI.Org).
 
-Welcome to **Master Debater AI**, a groundbreaking platform that puts your debating skills to the test. Are your opinions well-formed? Can you defend them effectively? Master Debater will challenge you. If you find yourself struggling, it may be time to approach discussions with a more open mind.
+Welcome to **Debate AI**, a groundbreaking platform that puts your debating skills to the test. Are your opinions well-formed? Can you defend them effectively? Master Debater will challenge you. If you find yourself struggling, it may be time to approach discussions with a more open mind.
 
-## Why Master Debater?
+## Why Debate AI?
 
 - **Intellectual Challenge**: Engage in rigorous debates against an AI that's informed and relentless.
 
@@ -24,7 +24,7 @@ Welcome to **Master Debater AI**, a groundbreaking platform that puts your debat
 
 ## How to Use
 
-1. Go to masterdebater.ai
+1. Go to debateai.org
 2. Choose a topic you're passionate about or want to explore.
 3. Set the AI's persona.
 4. Start debating!

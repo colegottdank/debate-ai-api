@@ -40,5 +40,5 @@ Master Debater is [MIT licensed](./LICENSE).
 
 ## Acknowledgments
 
-Thank you to everyone who has contributed to this project, and to open-source enthusiasts who use and support Master Debater.
+Thank you to everyone who has contributed to this project, and to open-source enthusiasts who use and support Debate AI.
 

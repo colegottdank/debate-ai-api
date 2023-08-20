@@ -40,6 +40,7 @@ export interface Database {
           id: string
           model: string
           persona: string
+          short_topic: string
           topic: string
           user_id: string
         }
@@ -48,6 +49,7 @@ export interface Database {
           id?: string
           model: string
           persona: string
+          short_topic: string
           topic: string
           user_id: string
         }
@@ -56,17 +58,11 @@ export interface Database {
           id?: string
           model?: string
           persona?: string
+          short_topic?: string
           topic?: string
           user_id?: string
         }
-        Relationships: [
-          {
-            foreignKeyName: "debates_user_id_fkey"
-            columns: ["user_id"]
-            referencedRelation: "users"
-            referencedColumns: ["id"]
-          }
-        ]
+        Relationships: []
       }
       profiles: {
         Row: {
@@ -123,12 +119,6 @@ export interface Database {
             foreignKeyName: "turns_debate_id_fkey"
             columns: ["debate_id"]
             referencedRelation: "debates"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "turns_user_id_fkey"
-            columns: ["user_id"]
-            referencedRelation: "users"
             referencedColumns: ["id"]
           }
         ]

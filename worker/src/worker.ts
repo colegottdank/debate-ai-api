@@ -6,7 +6,7 @@ import router, { corsify } from './router';
 export interface Env {
 	HELICONE_API_KEY: string;
 	OPENAI_API_KEY: string;
-	SUPABASE_SERVICE_ROLE_KEY: string;
+	SUPABASE_KEY: string;
 	SUPABASE_URL: string;
 }
 
@@ -67,7 +67,7 @@ export default {
 			let url = new URL(request.url);
 			let requestWrapper = request as RequestWrapper;
 			requestWrapper.env = env;
-			requestWrapper.supabaseClient = createClient<Database>(env.SUPABASE_URL ?? '', env.SUPABASE_SERVICE_ROLE_KEY ?? '');
+			requestWrapper.supabaseClient = createClient<Database>(env.SUPABASE_URL ?? '', env.SUPABASE_KEY ?? '');
 			requestWrapper.parsedUrl = url;
 			requestWrapper.ctx = ctx;
 

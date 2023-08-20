@@ -1,6 +1,6 @@
 import { Router, createCors, error } from 'itty-router';
 import { Env, RequestWrapper } from './worker';
-import { freeModels, gpt35, maxTokensLookup, validModels } from './models';
+import { freeModels, gpt35, gpt4, maxTokensLookup, validModels } from './models';
 import { Database } from './database.types';
 import { User } from '@supabase/supabase-js';
 import OpenAI from 'openai';
@@ -61,7 +61,7 @@ router.post('/v1/debate', authenticate, async (request) => {
 	const tokens = gpt_tokenizer.encode(JSON.stringify(messages));
 	const maxTokens = maxTokensLookup[gpt35] - tokens.length;
 	const result = await openai.chat.completions.create({
-		model: gpt35,
+		model: gpt4,
 		messages: messages,
 		max_tokens: maxTokens,
 	});
@@ -70,7 +70,7 @@ router.post('/v1/debate', authenticate, async (request) => {
 		.from('debates')
 		.insert({
 			topic: body.topic,
-			short_topic: result.choices[0].message?.content,
+			short_topic: result.choices[0].message?.content ?? body.topic,
 			persona: body.persona,
 			model: body.model,
 			user_id: request.user?.id ?? body.userId,
@@ -92,7 +92,10 @@ router.post('/v1/debate', authenticate, async (request) => {
 interface TurnRequest {
 	userId: string;
 	debateId: string;
-	isReversed: boolean;
+	argument: string;
+	speaker: 'user' | 'AI' | 'AI_for_user';
+	heh: boolean;
+	model: string;
 }
 
 router.post('/v1/turn', authenticate, async (request) => {
@@ -104,7 +107,7 @@ router.post('/v1/turn', authenticate, async (request) => {
 	if (debate.error) throw new Error(debate.error.message);
 	if (!debate.data) throw new Error('Debate not found');
 
-	validateModel(debate.data.model, request.user, request.profile);
+	if (!body.heh) validateModel(debate.data.model, request.user, request.profile);
 
 	const turns = await request.supabaseClient
 		.from('turns')
@@ -113,22 +116,50 @@ router.post('/v1/turn', authenticate, async (request) => {
 		.order('order_number', { ascending: true });
 
 	if (turns.error) throw new Error(turns.error.message);
-	if (!turns.data || turns.data.length === 0) throw new Error('Turns not found');
 
-	const messages: CreateChatCompletionRequestMessage[] = turns.data.map((turn) => {
-		const role = body.isReversed ? (turn.speaker === 'user' ? 'assistant' : 'user') : turn.speaker === 'user' ? 'user' : 'assistant';
+	// Prepend a system message to turns.data
+	const messages: CreateChatCompletionRequestMessage[] = [
+		{
+			role: 'system',
+			content: `You are engaged in a debate about ${debate.data.short_topic}. You are debating as ${debate.data.persona}.
+			You are taking the opposing side of the debate against the user. Each argument should be a single paragraph.`,
+		},
+	];
 
-		return {
-			role: role,
-			content: turn.content,
-		};
-	});
+	// No turns yet
+	if (!turns.data) {
+		// AI starting
+		if (body.speaker === 'AI') {
+			messages.push({
+				role: 'user',
+				content: `${debate.data.persona}, you start the debate about ${debate.data.short_topic}!`,
+			});
+		}
+		// User starting
+		else if (body.speaker === 'user') {
+			messages.push({
+				role: 'user',
+				content: body.argument,
+			});
+		}
+	} else {
+		// There are turns
+		turns.data?.map((turn) => {
+			const role =
+				body.speaker === 'AI_for_user' ? (turn.speaker === 'user' ? 'assistant' : 'user') : turn.speaker === 'user' ? 'user' : 'assistant';
+
+			messages.push({
+				role: role,
+				content: turn.content,
+			});
+		});
+	}
 
 	const openai = new OpenAI({
 		apiKey: request.env.OPENAI_API_KEY,
 		baseURL: 'https://oai.hconeai.com/v1',
 		defaultHeaders: {
-			'Helicone-Auth': request.env.HELICONE_API_KEY,
+			'Helicone-Auth': `Bearer ${request.env.HELICONE_API_KEY}`,
 			'Helicone-Property-DebateId': body.debateId,
 			'Helicone-User-Id': request.user?.id ?? body.userId,
 		},
@@ -138,7 +169,7 @@ router.post('/v1/turn', authenticate, async (request) => {
 	const tokens = gpt_tokenizer.encode(JSON.stringify(messages));
 	const maxTokens = maxTokensLookup[debate.data.model] - tokens.length;
 	const result = await openai.chat.completions.create({
-		model: debate.data.model,
+		model: body.model ?? debate.data.model,
 		messages: messages,
 		max_tokens: maxTokens,
 		stream: true,
@@ -152,7 +183,6 @@ router.post('/v1/turn', authenticate, async (request) => {
 
 	// loop over the data as it is streamed from OpenAI and write it using our writeable
 	for await (const part of result) {
-		console.log(part.choices[0]?.delta?.content || '');
 		writer.write(textEncoder.encode(part.choices[0]?.delta?.content || ''));
 	}
 

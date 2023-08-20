@@ -13,6 +13,6 @@
     "wrangler": "^3.0.0"
   },
   "dependencies": {
-    "langchain": "^0.0.101"
+    "openai": "^4.0.1"
   }
 }

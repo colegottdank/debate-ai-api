@@ -5,12 +5,19 @@ import { Database } from './database.types';
 import { User } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 import { CreateChatCompletionRequestMessage } from 'openai/resources/chat';
+import { DebateContext } from './DebateContext';
 
 export const { preflight, corsify } = createCors({
 	origins: ['*'],
 	methods: ['OPTIONS'],
 	headers: ['authorization, x-client-info, apikey, content-type'],
 });
+
+const roleLookup: Record<string, 'function' | 'user' | 'system' | 'assistant'> = {
+	user: 'user',
+	AI: 'assistant',
+	AI_for_user: 'user',
+};
 
 const router = Router<RequestWrapper>();
 router.all('*', preflight);
@@ -86,10 +93,7 @@ router.post('/v1/debate', authenticate, async (request) => {
 
 /* ------------------------------- Turn --------------------------------- */
 
-// AI Turn
-// Human Turn
-// AI as Human Turn
-interface TurnRequest {
+export interface TurnRequest {
 	userId: string;
 	debateId: string;
 	argument: string;
@@ -98,166 +102,231 @@ interface TurnRequest {
 	model: string;
 }
 
-router.post('/v1/turn', authenticate, async (request) => {
-	const body = await request.json<TurnRequest>();
-	if (!body.userId && !request.user) throw new Error('User not found');
-
-	const debate = await request.supabaseClient.from('debates').select('*').eq('id', body.debateId).single();
-
-	if (debate.error) throw new Error(debate.error.message);
-	if (!debate.data) throw new Error('Debate not found');
-
-	if (!body.heh) validateModel(debate.data.model, request.user, request.profile);
-
-	const turns = await request.supabaseClient
-		.from('turns')
-		.select('*')
-		.eq('debate_id', body.debateId)
-		.order('order_number', { ascending: true });
-
-	if (turns.error) throw new Error(turns.error.message);
+router.post('/v1/debate/:id/turn', authenticate, async (request) => {
+	const debateContext = await DebateContext.create(request, request.params.id);
+	await debateContext.validate();
 
 	// Prepend a system message to turns.data
 	const messages: CreateChatCompletionRequestMessage[] = [
 		{
 			role: 'system',
-			content: `You are engaged in a debate about ${debate.data.short_topic}. You are debating as ${debate.data.persona}.
-			You are taking the opposing side of the debate against the user. Each argument should be a single paragraph.`,
+			content: `You are engaged in a debate about ${debateContext.debate.short_topic}. You are debating in the style of ${debateContext.debate.persona}.
+			You are taking the opposing side of the debate against the user.
+			Focus on the debate topic and avoid going off-topic.
+			Ensure the debate arguments are sounds, quality arguments like a professional debater.
+			Always get to the point
+			Each argument should be a single paragraph.`,
 		},
 	];
 
-	// No turns yet
-	if (!turns.data) {
-		// AI starting
-		if (body.speaker === 'AI') {
-			messages.push({
-				role: 'user',
-				content: `${debate.data.persona}, you start the debate about ${debate.data.short_topic}!`,
-			});
-		}
-		// User starting
-		else if (body.speaker === 'user') {
-			messages.push({
-				role: 'user',
-				content: body.argument,
-			});
-		}
-	} else {
-		// There are turns
-		turns.data?.map((turn) => {
-			const role =
-				body.speaker === 'AI_for_user' ? (turn.speaker === 'user' ? 'assistant' : 'user') : turn.speaker === 'user' ? 'user' : 'assistant';
+	// Check if there are existing turns
+	const hasTurns = debateContext.turns && debateContext.turns.length > 0;
+
+	// Case 1: AI Initiates Debate
+	if (!hasTurns && debateContext.turnRequest.speaker === 'AI') {
+		return await handleAIInitiates(debateContext, messages);
+	}
+
+	// Case 2: User Initiates Debate
+	if (!hasTurns && debateContext.turnRequest.speaker === 'user') {
+		if (!debateContext.turnRequest.argument) throw new Error('Argument not found');
+		return await handleUserContinues(debateContext, messages);
+	}
+
+	// Case 3: Debate Continues: User Provides Argument
+	if (hasTurns && debateContext.turnRequest.speaker === 'user') {
+		if (!debateContext.turnRequest.argument) throw new Error('Argument not found');
+		debateContext.turns?.map((turn) => {
+			const role = roleLookup[turn.speaker];
 
 			messages.push({
 				role: role,
 				content: turn.content,
 			});
 		});
+
+		if (messages[messages.length - 1].role != 'assistant') throw new Error('Last message is not AI');
+		return await handleUserContinues(debateContext, messages);
 	}
 
+	// Case 4: AI Responds on User's Behalf
+	if (debateContext.turnRequest.speaker === 'AI_for_user') {
+		debateContext.turns?.map((turn) => {
+			const role = roleLookup[turn.speaker];
+
+			messages.push({
+				role: role,
+				content: turn.content,
+			});
+		});
+
+		if (messages[messages.length - 1].role != 'assistant') throw new Error('Last message is not AI');
+		return await handleAIForUser(debateContext, messages);
+	}
+
+	// Case 5: Debate Continues: AI Provides Argument
+	if (hasTurns && debateContext.turnRequest.speaker === 'AI') {
+		debateContext.turns?.map((turn) => {
+			const role = roleLookup[turn.speaker];
+
+			messages.push({
+				role: role,
+				content: turn.content,
+			});
+		});
+
+		if (messages[messages.length - 1].role != 'user') throw new Error('Last message is not user');
+		return await handlerAIContinues(debateContext, messages);
+	}
+
+	throw new Error('Invalid turn request');
+});
+
+async function handleAIInitiates(debateContext: DebateContext, messages: CreateChatCompletionRequestMessage[]) {
+	messages.push({
+		role: 'user',
+		content: `${debateContext.debate.persona}, you start the debate about ${debateContext.debate.short_topic}!`,
+	});
+
+	messages.push({
+		role: 'assistant',
+		content: `Ok, I will start the debate about ${debateContext.debate.short_topic} while remaining in the style of ${debateContext.debate.persona}!`,
+	});
+
+	const aiResponse = await getAIResponse(messages, debateContext, 'AI', 1);
+
+	return new Response(aiResponse, {
+		headers: {
+			'Content-Type': 'application/octet-stream',
+		},
+	});
+}
+
+async function handleUserContinues(debateContext: DebateContext, messages: CreateChatCompletionRequestMessage[]) {
+	await insertTurn(debateContext, debateContext.turnRequest.argument, 'user', (debateContext.turns?.length ?? 0) + 1);
+
+	messages.push({
+		role: 'user',
+		content: debateContext.turnRequest.argument,
+	});
+
+	messages.push({
+		role: 'assistant',
+		content: `Ok, I will now give a response to the user's argument about ${debateContext.debate.short_topic} while remaining in the style of ${debateContext.debate.persona}! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user!`,
+	});
+
+	const aiResponse = await getAIResponse(messages, debateContext, 'AI', (debateContext.turns?.length ?? 0) + 2);
+
+	return new Response(aiResponse, {
+		headers: {
+			'Content-Type': 'application/octet-stream',
+		},
+	});
+}
+
+async function handleAIForUser(debateContext: DebateContext, messages: CreateChatCompletionRequestMessage[]) {
+	const reversedMessages = reverseRoles(messages);
+
+	const systemMessage = reversedMessages.find((message) => message.role === 'system');
+	if (systemMessage) {
+		systemMessage.content = `You are engaged in a debate about ${debateContext.debate.short_topic}. You are debating against ${debateContext.debate.persona}.
+			You are taking the opposing side of the debate against the user.
+			Focus on the debate topic and avoid going off-topic.
+			Ensure the debate arguments are sounds, quality arguments like a professional debater.
+			Always get to the point
+			Each argument should be a single paragraph.`;
+	}
+
+	reversedMessages.push({
+		role: 'assistant',
+		content: `Ok, I will now give a response to the user's argument about ${debateContext.debate.short_topic}! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user!`,
+	});
+
+	const aiUserResponse = await getAIResponse(reversedMessages, debateContext, 'AI_for_user', (debateContext.turns?.length ?? 0) + 1);
+
+	return new Response(aiUserResponse, {
+		headers: {
+			'Content-Type': 'application/octet-stream',
+		},
+	});
+}
+
+async function handlerAIContinues(debateContext: DebateContext, messages: CreateChatCompletionRequestMessage[]) {
+	messages.push({
+		role: 'assistant',
+		content: `Ok, I will now give a response to the user's argument about ${debateContext.debate.short_topic} while remaining in the style of ${debateContext.debate.persona}!! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user!`,
+	});
+	const aiResponse = await getAIResponse(messages, debateContext, 'AI', (debateContext.turns?.length ?? 0) + 1);
+
+	return new Response(aiResponse, {
+		headers: {
+			'Content-Type': 'application/octet-stream',
+		},
+	});
+}
+
+async function insertTurn(debateContext: DebateContext, content: string, speaker: 'user' | 'AI' | 'AI_for_user', orderNumber: number) {
+	return await debateContext.request.supabaseClient.from('turns').insert({
+		user_id: debateContext.userId,
+		debate_id: debateContext.debate.id,
+		speaker: speaker,
+		content: content,
+		order_number: orderNumber,
+	});
+}
+
+function reverseRoles(messages: CreateChatCompletionRequestMessage[]): CreateChatCompletionRequestMessage[] {
+	return messages.map((message) => {
+		return {
+			role: message.role === 'system' ? 'system' : message.role === 'user' ? 'assistant' : 'user',
+			content: message.content,
+		};
+	});
+}
+
+async function getAIResponse(
+	messages: CreateChatCompletionRequestMessage[],
+	debateContext: DebateContext,
+	speaker: 'user' | 'AI' | 'AI_for_user',
+	orderNumber: number
+): Promise<ReadableStream> {
 	const openai = new OpenAI({
-		apiKey: request.env.OPENAI_API_KEY,
+		apiKey: debateContext.request.env.OPENAI_API_KEY,
 		baseURL: 'https://oai.hconeai.com/v1',
 		defaultHeaders: {
-			'Helicone-Auth': `Bearer ${request.env.HELICONE_API_KEY}`,
-			'Helicone-Property-DebateId': body.debateId,
-			'Helicone-User-Id': request.user?.id ?? body.userId,
+			'Helicone-Auth': `Bearer ${debateContext.request.env.HELICONE_API_KEY}`,
+			'Helicone-Property-DebateId': debateContext.turnRequest.debateId,
+			'Helicone-User-Id': debateContext.userId,
 		},
 	});
 
 	let gpt_tokenizer = await import('gpt-tokenizer');
 	const tokens = gpt_tokenizer.encode(JSON.stringify(messages));
-	const maxTokens = maxTokensLookup[debate.data.model] - tokens.length;
+	const maxTokens = maxTokensLookup[debateContext.turnRequest.model] - tokens.length;
 	const result = await openai.chat.completions.create({
-		model: body.model ?? debate.data.model,
+		model: debateContext.turnRequest.model ?? debateContext.debate.model,
 		messages: messages,
 		max_tokens: maxTokens,
 		stream: true,
 	});
 
-	// Using our readable and writable to handle streaming data
 	let { readable, writable } = new TransformStream();
 
 	let writer = writable.getWriter();
 	const textEncoder = new TextEncoder();
+	let content = '';
 
-	// loop over the data as it is streamed from OpenAI and write it using our writeable
 	for await (const part of result) {
-		writer.write(textEncoder.encode(part.choices[0]?.delta?.content || ''));
+		const partContent = part.choices[0]?.delta?.content || '';
+		writer.write(textEncoder.encode(partContent));
+		content += partContent;
 	}
 
-	writer.close();
+	debateContext.request.ctx.waitUntil(insertTurn(debateContext, content, speaker, orderNumber));
+	debateContext.request.ctx.waitUntil(writer.close());
 
-	// Send readable back to the browser so it can read the stream content
-	return new Response(readable, {
-		headers: {
-			'Content-Type': 'application/octet-stream',
-		},
-	});
-
-	// // Splitting stream into two
-	// const logStream = new PassThrough();
-	// const responseStream = new PassThrough();
-	// result.data.pipe(logStream);
-	// result.data.pipe(responseStream);
-
-	// if (!('on' in result.data)) throw new Error('No data received from OpenAI');
-	// if (!(result.data instanceof Readable)) throw new Error('response data does not have Readable.on stream method');
-
-	// let combinedTextData = '';
-	// logStream.on('data', (chunk) => {
-	// 	const lines: string[] = chunk
-	// 		.toString()
-	// 		.split('\n')
-	// 		.filter((line: string) => line.trim() !== '');
-	// 	for (const line of lines) {
-	// 		const message = line.replace(/^data: /, '');
-	// 		if (message === '[DONE]') {
-	// 			return;
-	// 		}
-
-	// 		try {
-	// 			const parsedMessage = JSON.parse(message);
-	// 			combinedTextData += parsedMessage.text;
-	// 		} catch (error) {
-	// 			throw new Error('Error parsing message as JSON: ' + error);
-	// 		}
-	// 	}
-	// });
-
-	// logStream.on('end', async () => {
-	// 	const insertData = async () => {
-	// 		try {
-	// 			const newTurn = await request.supabaseClient
-	// 				.from('turns')
-	// 				.insert([
-	// 					{
-	// 						debate_id: body.debateId,
-	// 						content: combinedTextData.trim(),
-	// 						speaker: body.isReversed ? 'AI_for_user' : 'AI',
-	// 						user_id: request.user?.id ?? body.userId,
-	// 						order_number: turns.data.length + 1,
-	// 					},
-	// 				])
-	// 				.select('*');
-
-	// 			if (newTurn.error) throw new Error(newTurn.error.message);
-	// 			if (!newTurn.data) throw new Error('Turn not found');
-	// 		} catch (error) {
-	// 			console.error("Error inserting into 'turns':", error);
-	// 		}
-	// 	};
-
-	// 	request.ctx.waitUntil(insertData());
-	// });
-
-	// return new Response(responseStream, {
-	// 	headers: {
-	// 		'Content-Type': 'application/octet-stream',
-	// 		...corsHeaders, // Spread the CORS headers here
-	// 	},
-	// });
-});
+	return readable;
+}
 
 // 404 for everything else
 router.all('*', () => error(404));

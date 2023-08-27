@@ -68,14 +68,26 @@ export interface Database {
         Row: {
           id: string
           plan: string
+          pro_trial_count: number
+          stripe_id: string | null
+          subscription_end_date: string | null
+          subscription_id: string | null
         }
         Insert: {
           id: string
           plan?: string
+          pro_trial_count?: number
+          stripe_id?: string | null
+          subscription_end_date?: string | null
+          subscription_id?: string | null
         }
         Update: {
           id?: string
           plan?: string
+          pro_trial_count?: number
+          stripe_id?: string | null
+          subscription_end_date?: string | null
+          subscription_id?: string | null
         }
         Relationships: [
           {

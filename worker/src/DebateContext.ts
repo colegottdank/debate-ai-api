@@ -1,8 +1,15 @@
-import { User } from '@supabase/supabase-js';
 import { Database } from './database.types';
-import { TurnRequest } from './router';
 import { RequestWrapper } from './worker';
 import { freeModels, validModels } from './models';
+
+export interface TurnRequest {
+	userId: string;
+	debateId: string;
+	argument: string;
+	speaker: 'user' | 'AI' | 'AI_for_user';
+	heh: boolean;
+	model: string;
+}
 
 export class DebateContext {
 	request: RequestWrapper;
@@ -47,16 +54,25 @@ export class DebateContext {
 	}
 
 	async validate() {
+		const model = this.turnRequest.model ?? this.debate.model;
 		if (!this.turnRequest.userId && !this.request.user) throw new Error('User not found');
 
 		if (this.turnRequest.heh) return; // Validate model override
 
 		// Validate model
-		if (!validModels.includes(this.debate.model)) throw new Error('Not a valid model');
+		if (!validModels.includes(model)) throw new Error('Not a valid model');
 
-		if (!freeModels.includes(this.debate.model)) {
-			if (!this.request.user) throw new Error('Not a valid model for anonymous users');
-			if (this.request.profile.plan == 'free') throw new Error('Not a valid model for free users');
+		if (!freeModels.includes(model)) {
+			if (!this.request.user || !this.request.profile) throw new Error('Not a valid model for anonymous users');
+
+			if (this.request.profile.pro_trial_count < 5) {
+				await this.request.supabaseClient
+					.from('profiles')
+					.update({ pro_trial_count: this.request.profile.pro_trial_count + 1 })
+					.eq('id', this.request.profile.id);
+				return;
+			}
+			if (this.request.profile.plan != 'pro') throw new Error('Not a valid model for free users');
 		}
 	}
 }

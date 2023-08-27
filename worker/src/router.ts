@@ -19,8 +19,8 @@ const roleLookup: Record<string, 'function' | 'user' | 'system' | 'assistant'> =
 	AI_for_user: 'user',
 };
 
-const router = Router<RequestWrapper>();
-router.all('*', preflight);
+const apiRouter = Router<RequestWrapper>();
+apiRouter.all('*', preflight);
 
 interface NewDebateRequest {
 	topic: string;
@@ -30,7 +30,7 @@ interface NewDebateRequest {
 	heh: boolean;
 }
 
-router.post('/v1/debate', authenticate, async (request) => {
+apiRouter.post('/v1/debate', authenticate, async (request) => {
 	const body = await request.json<NewDebateRequest>();
 	if (!body.userId && !request.user) throw new Error('User not found');
 
@@ -48,7 +48,7 @@ router.post('/v1/debate', authenticate, async (request) => {
 		},
 		{
 			role: 'assistant',
-			content: `Ok, I will not give you a short name for the debate: ${body.topic}.`,
+			content: `Ok, I will not give you a short name for the debate without any other characters or quotes: ${body.topic}.`,
 		},
 	];
 
@@ -77,7 +77,7 @@ router.post('/v1/debate', authenticate, async (request) => {
 		.from('debates')
 		.insert({
 			topic: body.topic,
-			short_topic: result.choices[0].message?.content ?? body.topic,
+			short_topic: cleanContent(result.choices[0].message?.content ?? body.topic),
 			persona: body.persona,
 			model: body.model,
 			user_id: request.user?.id ?? body.userId,
@@ -85,24 +85,25 @@ router.post('/v1/debate', authenticate, async (request) => {
 		.select('*')
 		.single();
 
-	if (newDebate.error) throw new Error(newDebate.error.message);
+	if (newDebate.error) throw new Error(`Error occurred inserting new debate: ${newDebate.error.message}`);
 	if (!newDebate.data) throw new Error('Debate not found');
 
 	return newDebate.data;
 });
 
-/* ------------------------------- Turn --------------------------------- */
+function cleanContent(content: string): string {
+	// Remove quotes at the beginning and end
+	content = content.replace(/^["']|["']$/g, '');
 
-export interface TurnRequest {
-	userId: string;
-	debateId: string;
-	argument: string;
-	speaker: 'user' | 'AI' | 'AI_for_user';
-	heh: boolean;
-	model: string;
+	// Remove "Debate Name: " prefix if it exists
+	content = content.replace(/^Debate Name: /, '');
+
+	return content.trim();
 }
 
-router.post('/v1/debate/:id/turn', authenticate, async (request) => {
+/* ------------------------------- Turn --------------------------------- */
+
+apiRouter.post('/v1/debate/:id/turn', authenticate, async (request) => {
 	const debateContext = await DebateContext.create(request, request.params.id);
 	await debateContext.validate();
 
@@ -314,24 +315,30 @@ async function getAIResponse(
 
 	let writer = writable.getWriter();
 	const textEncoder = new TextEncoder();
-	let content = '';
+	let allContent = ''; // Store all chunks
 
-	for await (const part of result) {
-		const partContent = part.choices[0]?.delta?.content || '';
-		writer.write(textEncoder.encode(partContent));
-		content += partContent;
-	}
+	(async () => {
+		for await (const part of result) {
+			const partContent = part.choices[0]?.delta?.content || '';
+			allContent += partContent; // Add to the stored content
+			await writer.write(textEncoder.encode(partContent));
+		}
 
-	debateContext.request.ctx.waitUntil(insertTurn(debateContext, content, speaker, orderNumber));
-	debateContext.request.ctx.waitUntil(writer.close());
+		debateContext.request.ctx.waitUntil(
+			(async () => {
+				await insertTurn(debateContext, allContent, speaker, orderNumber);
+				await writer.close();
+			})()
+		);
+	})();
 
 	return readable;
 }
 
 // 404 for everything else
-router.all('*', () => error(404));
+apiRouter.all('*', () => error(404));
 
-export default router;
+export default apiRouter;
 
 // ###################################################################################
 // ################################## MiddleWare #####################################

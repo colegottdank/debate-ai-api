@@ -6,6 +6,8 @@ import { User } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 import { CreateChatCompletionRequestMessage } from 'openai/resources/chat';
 import { DebateContext } from './DebateContext';
+import StripeServer from './StripeServer';
+import Stripe from 'stripe';
 
 export const { preflight, corsify } = createCors({
 	origins: ['*'],
@@ -335,6 +337,125 @@ async function getAIResponse(
 	return readable;
 }
 
+apiRouter.post('/v1/stripe/create-checkout-session', authenticateStripe, async (request) => {
+	try {
+		const stripe = StripeServer.getInstance(request.env);
+
+		// Fetch the list of products
+		const products = await stripe.products.list();
+
+		// Find product with name "Pro"
+		const proProduct = products.data.find((product) => product.name === 'DebateAI Pro');
+
+		// Make sure the product "Pro" is found
+		if (!proProduct) {
+			throw new Error("Product 'Pro' not found");
+		}
+
+		// Fetch the prices of the "Pro" product
+		const prices = await stripe.prices.list({ product: proProduct.id });
+
+		// Make sure there is at least one price for the "Pro" product
+		if (prices.data.length === 0) {
+			throw new Error("No prices found for the 'Pro' product");
+		}
+
+		const customerId = (await getStripeCustomer(request)).id;
+
+		const existingSubscriptions = await stripe.subscriptions.list({
+			customer: customerId,
+			status: 'active',
+		});
+
+		// Check if any of the active subscriptions belong to the "Pro" product
+		const hasProSubscription = existingSubscriptions.data.some((subscription) =>
+			subscription.items.data.some((item) => item.price.product === proProduct.id)
+		);
+
+		if (hasProSubscription) {
+			// The customer already has an active subscription to this plan
+			return new Response(JSON.stringify({ message: 'You already have an active subscription to this plan' }), {
+				status: 400,
+			});
+		}
+
+		// Use the first price for the checkout session
+		const session = await stripe.checkout.sessions.create({
+			payment_method_types: ['card'],
+			mode: 'subscription',
+			line_items: [
+				{
+					price: prices.data[0].id,
+					quantity: 1,
+				},
+			],
+			customer: customerId,
+			success_url: `${request.env.FE_URL}?session_id={CHECKOUT_SESSION_ID}`,
+			cancel_url: `${request.env.FE_URL}`,
+		});
+
+		if (!session.url) throw new Error('Failed to create session');
+
+		let response = {
+			url: session.url,
+		};
+
+		return new Response(JSON.stringify(response), { status: 200 });
+	} catch (error) {
+		console.error('Error:', error);
+	}
+});
+
+apiRouter.post('/v1/stripe/create-portal-session', authenticateStripe, async (request) => {
+	try {
+		const profile = await request.supabaseClient.from('profiles').select('*').eq('id', request.user?.id).single();
+
+		if (profile.error || !profile.data) {
+			throw new Error(profile.error.message);
+		}
+
+		const stripe = StripeServer.getInstance(request.env);
+
+		const portalSession = await stripe.billingPortal.sessions.create({
+			customer: profile.data.stripe_id ?? (await getStripeCustomer(request)).id,
+			return_url: request.env.FE_URL,
+		});
+
+		return new Response(JSON.stringify({ url: portalSession.url }), { status: 200 });
+	} catch (error: any) {
+		console.log('Error creating portal session:', error);
+		// You may want to replace this with a more appropriate error response depending on your use case
+		return new Response(JSON.stringify({ message: 'Error creating portal session', error: error.toString() }), {
+			status: 500,
+		});
+	}
+});
+
+async function getStripeCustomer(request: RequestWrapper): Promise<Stripe.Customer> {
+	const stripe = StripeServer.getInstance(request.env);
+	try {
+		const customers = await stripe.customers.list({
+			email: request.user?.email,
+			expand: ['data.subscriptions'],
+		});
+		let customer;
+		if (customers.data.length === 0) {
+			customer = await stripe.customers.create({
+				email: request.user?.email,
+				name: request.user?.email,
+				expand: ['subscriptions'],
+			});
+
+			await request.supabaseClient.from('profiles').update({ stripe_id: customer.id }).eq('id', request.user?.id);
+		} else {
+			customer = customers.data[0];
+		}
+		return customer;
+	} catch (err) {
+		throw new Error('Failed to get customer');
+	}
+}
+
 // 404 for everything else
 apiRouter.all('*', () => error(404));
 
@@ -364,6 +485,22 @@ async function authenticate(request: RequestWrapper, env: Env): Promise<void> {
 
 	// Validate if the user is logged in
 	// if (!request.user) throw new Error('User not found');
+}
+
+async function authenticateStripe(request: RequestWrapper, env: Env): Promise<void> {
+	let token = request.headers.get('Authorization')?.replace('Bearer ', '');
+
+	const user = await request.supabaseClient.auth.getUser(token);
+
+	if (!user || !user.data || !user.data.user) throw new Error('User not found');
+
+	const profile = await request.supabaseClient.from('profiles').select('*').eq('id', user.data.user.id).single();
+
+	if (profile.error) throw new Error(profile.error.message);
+	if (!profile.data) throw new Error('Profile not found');
+
+	request.profile = profile.data;
+	request.user = user.data.user;
 }
 
 function validateModel(model: string, user: User | null, profile: Database['public']['Tables']['profiles']['Row']) {

@@ -11,6 +11,7 @@ export interface Env {
 	SUPABASE_URL: string;
 	STRIPE_API_KEY: string;
 	STRIPE_WEBHOOK_SECRET: string;
+	FE_URL: string;
 }
 
 const corsHeaders = {

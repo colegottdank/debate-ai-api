@@ -77,10 +77,8 @@ export class DebateContext {
 		// If user is using a free model, return the model
 		if (freeModels.includes(model)) {
 			this.model = model;
-		}
-
-		// If the user is on their free trial, increment the pro_trial_count and return the model
-		if (this.request.profile && this.request.profile.pro_trial_count < 5) {
+		} // If the user is on their free trial, increment the pro_trial_count and return the model
+		else if (this.request.profile && (this.request.profile.pro_trial_count < 5 || this.request.profile.plan === 'pro')) {
 			await this.request.supabaseClient
 				.from('profiles')
 				.update({ pro_trial_count: this.request.profile.pro_trial_count + 1 })

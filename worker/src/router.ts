@@ -118,7 +118,8 @@ apiRouter.post('/v1/debate/:id/turn', authenticate, async (request) => {
 			Focus on the debate topic and avoid going off-topic.
 			Ensure the debate arguments are sounds, quality arguments like a professional debater.
 			Always get to the point
-			Each argument should be a single paragraph.`,
+			Each argument should be a single paragraph.
+			You will not repeat or acknowledge the user's argument, you will instead go directly into your counter argument.`,
 		},
 	];
 
@@ -237,12 +238,13 @@ async function handleAIForUser(debateContext: DebateContext, messages: CreateCha
 			Focus on the debate topic and avoid going off-topic.
 			Ensure the debate arguments are sounds, quality arguments like a professional debater.
 			Always get to the point
-			Each argument should be a single paragraph.`;
+			Each argument should be a single paragraph.
+			You will not repeat or acknowledge the user's argument, you will instead go directly into your counter argument.`;
 	}
 
 	reversedMessages.push({
 		role: 'assistant',
-		content: `Ok, I will now give a response to the user's argument about ${debateContext.debate.short_topic}! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user!`,
+		content: `I will now go directly into my counter argument to the user's argument about ${debateContext.debate.short_topic}! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user!`,
 	});
 
 	const aiUserResponse = await getAIResponse(reversedMessages, debateContext, 'AI_for_user', (debateContext.turns?.length ?? 0) + 1);
@@ -257,7 +259,7 @@ async function handleAIForUser(debateContext: DebateContext, messages: CreateCha
 async function handlerAIContinues(debateContext: DebateContext, messages: CreateChatCompletionRequestMessage[]) {
 	messages.push({
 		role: 'assistant',
-		content: `Ok, I will now give a response to the user's argument about ${debateContext.debate.short_topic} while remaining in the style of ${debateContext.debate.persona}!! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user!`,
+		content: `I will now go directly into my counter argument to the user's argument about ${debateContext.debate.short_topic} while remaining in the style of ${debateContext.debate.persona}!! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user!`,
 	});
 	const aiResponse = await getAIResponse(messages, debateContext, 'AI', (debateContext.turns?.length ?? 0) + 1);
 
@@ -506,6 +508,9 @@ function validateModel(model: string, user: User | null, profile: Database['publ
 	}
 
 	if (freeModels.includes(model)) return model;
+
+	// If the user is on their free trial, return the model
+	if (user && profile && profile.plan == `free` && profile.pro_trial_count < 5) return model;
 
 	if (!user || !profile?.plan || profile.plan != 'pro') return gpt3516k;
 

@@ -34,7 +34,6 @@ stripeRouter.post('/v1/stripe/webhooks', async (request) => {
 	console.log(`Received event with type: ${eventType}`);
 
 	const customer_id = data.object.customer;
-
 	switch (eventType) {
 		case 'customer.subscription.deleted':
 		case 'customer.subscription.updated':
@@ -47,7 +46,7 @@ stripeRouter.post('/v1/stripe/webhooks', async (request) => {
 				const subscription_end_date = data.object.current_period_end;
 				const stripe_id = data.object.customer;
 				const sub = await request.supabaseClient
-					.from('profile')
+					.from('profiles')
 					.update({
 						plan: 'pro',
 						subscription_id: subscription_id,
@@ -58,11 +57,11 @@ stripeRouter.post('/v1/stripe/webhooks', async (request) => {
 					.select('*')
 					.single();
 
-				if (sub.error) throw new Error(`Failed to update subscription: ${sub.error.message}`);
+				if (sub.error) throw new Error(`Failed to update subscription: ${JSON.stringify(sub.error)}`);
 			} else {
 				// For all other statuses, update user's subscription to 'free' tier
 				const sub = await request.supabaseClient
-					.from('profile')
+					.from('profiles')
 					.update({
 						plan: 'free',
 						subscription_id: null,

@@ -1,6 +1,6 @@
 import { Database } from './database.types';
 import { RequestWrapper } from './worker';
-import { freeModels, validModels } from './models';
+import { freeModels, gpt3516k, validModels } from './models';
 
 export interface TurnRequest {
 	userId: string;
@@ -17,6 +17,7 @@ export class DebateContext {
 	debate: Database['public']['Tables']['debates']['Row'];
 	turns: Database['public']['Tables']['turns']['Row'][] | undefined;
 	userId: string;
+	model: string = gpt3516k;
 
 	private constructor(
 		request: RequestWrapper,
@@ -55,24 +56,38 @@ export class DebateContext {
 
 	async validate() {
 		const model = this.turnRequest.model ?? this.debate.model;
-		if (!this.turnRequest.userId && !this.request.user) throw new Error('User not found');
 
-		if (this.turnRequest.heh) return; // Validate model override
-
-		// Validate model
-		if (!validModels.includes(model)) throw new Error('Not a valid model');
-
-		if (!freeModels.includes(model)) {
-			if (!this.request.user || !this.request.profile) throw new Error('Not a valid model for anonymous users');
-
-			if (this.request.profile.pro_trial_count < 5) {
-				await this.request.supabaseClient
-					.from('profiles')
-					.update({ pro_trial_count: this.request.profile.pro_trial_count + 1 })
-					.eq('id', this.request.profile.id);
-				return;
-			}
-			if (this.request.profile.plan != 'pro') throw new Error('Not a valid model for free users');
+		// Ensure user is available
+		if (!this.turnRequest.userId && !this.request.user) {
+			throw new Error('User not found');
 		}
+
+		// Validate model, if invalid, use default gpt3516k
+		if (!validModels.includes(model)) {
+			console.error(`Invalid model for debate ${this.turnRequest.debateId}: ${model}`);
+			this.model = gpt3516k;
+			return;
+		}
+
+		// If the heh flag is set, simply return the model without further checks
+		if (this.turnRequest.heh) {
+			this.model = model;
+		}
+
+		// If user is using a free model, return the model
+		if (freeModels.includes(model)) {
+			this.model = model;
+		}
+
+		// If the user is on their free trial, increment the pro_trial_count and return the model
+		if (this.request.profile && this.request.profile.pro_trial_count < 5) {
+			await this.request.supabaseClient
+				.from('profiles')
+				.update({ pro_trial_count: this.request.profile.pro_trial_count + 1 })
+				.eq('id', this.request.profile.id);
+			this.model = model;
+		}
+
+		// Otherwise, use default gpt3516k
 	}
 }

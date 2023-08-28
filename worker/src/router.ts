@@ -1,6 +1,6 @@
 import { Router, createCors, error } from 'itty-router';
 import { Env, RequestWrapper } from './worker';
-import { freeModels, gpt35, gpt4, maxTokensLookup, validModels } from './models';
+import { freeModels, gpt35, gpt3516k, gpt4, maxTokensLookup, validModels } from './models';
 import { Database } from './database.types';
 import { User } from '@supabase/supabase-js';
 import OpenAI from 'openai';
@@ -36,7 +36,7 @@ apiRouter.post('/v1/debate', authenticate, async (request) => {
 	const body = await request.json<NewDebateRequest>();
 	if (!body.userId && !request.user) throw new Error('User not found');
 
-	if (!body.heh) validateModel(body.model, request.user, request.profile);
+	const model = body.heh ? body.model : validateModel(body.model, request.user, request.profile);
 
 	const messages: CreateChatCompletionRequestMessage[] = [
 		{
@@ -81,7 +81,7 @@ apiRouter.post('/v1/debate', authenticate, async (request) => {
 			topic: body.topic,
 			short_topic: cleanContent(result.choices[0].message?.content ?? body.topic),
 			persona: body.persona,
-			model: body.model,
+			model: model,
 			user_id: request.user?.id ?? body.userId,
 		})
 		.select('*')
@@ -107,7 +107,7 @@ function cleanContent(content: string): string {
 
 apiRouter.post('/v1/debate/:id/turn', authenticate, async (request) => {
 	const debateContext = await DebateContext.create(request, request.params.id);
-	await debateContext.validate();
+	const model = await debateContext.validate();
 
 	// Prepend a system message to turns.data
 	const messages: CreateChatCompletionRequestMessage[] = [
@@ -275,6 +275,7 @@ async function insertTurn(debateContext: DebateContext, content: string, speaker
 		speaker: speaker,
 		content: content,
 		order_number: orderNumber,
+		model: debateContext.model,
 	});
 }
 
@@ -305,9 +306,10 @@ async function getAIResponse(
 
 	let gpt_tokenizer = await import('gpt-tokenizer');
 	const tokens = gpt_tokenizer.encode(JSON.stringify(messages));
-	const maxTokens = maxTokensLookup[debateContext.turnRequest.model] - tokens.length;
+	const maxTokens = maxTokensLookup[debateContext.model] - tokens.length;
+	if (maxTokens < 50) throw new Error('Not enough tokens to generate response');
 	const result = await openai.chat.completions.create({
-		model: debateContext.turnRequest.model ?? debateContext.debate.model,
+		model: debateContext.model,
 		messages: messages,
 		max_tokens: maxTokens,
 		stream: true,
@@ -466,7 +468,6 @@ export default apiRouter;
 // ###################################################################################
 async function authenticate(request: RequestWrapper, env: Env): Promise<void> {
 	let token = request.headers.get('Authorization')?.replace('Bearer ', '');
-	// if (!token) throw new Error("Missing 'Authorization' header");
 
 	const user = await request.supabaseClient.auth.getUser(token);
 
@@ -478,13 +479,8 @@ async function authenticate(request: RequestWrapper, env: Env): Promise<void> {
 
 		request.profile = profile.data;
 	}
-	// if (user.error) throw new Error(user.error.message);
-	// if (!user.data) throw new Error('User not found');
 
 	request.user = user.data.user;
-
-	// Validate if the user is logged in
-	// if (!request.user) throw new Error('User not found');
 }
 
 async function authenticateStripe(request: RequestWrapper, env: Env): Promise<void> {
@@ -503,11 +499,15 @@ async function authenticateStripe(request: RequestWrapper, env: Env): Promise<vo
 	request.user = user.data.user;
 }
 
-function validateModel(model: string, user: User | null, profile: Database['public']['Tables']['profiles']['Row']) {
-	if (!validModels.includes(model)) throw new Error('Not a valid model');
-
-	if (!freeModels.includes(model)) {
-		if (!user) throw new Error('Not a valid model for anonymous users');
-		if (profile.plan == 'free') throw new Error('Not a valid model for free users');
+function validateModel(model: string, user: User | null, profile: Database['public']['Tables']['profiles']['Row']): string {
+	if (!validModels.includes(model)) {
+		console.error('Not a valid model, defaulted to gpt-3.5-turbo 16k');
+		return gpt3516k;
 	}
+
+	if (freeModels.includes(model)) return model;
+
+	if (!user || !profile?.plan || profile.plan != 'pro') return gpt3516k;
+
+	return model;
 }

@@ -104,6 +104,7 @@ export interface Database {
           created_at: string
           debate_id: string
           id: string
+          model: string | null
           order_number: number
           speaker: Database["public"]["Enums"]["speaker_type"]
           user_id: string
@@ -113,6 +114,7 @@ export interface Database {
           created_at?: string
           debate_id: string
           id?: string
+          model?: string | null
           order_number: number
           speaker: Database["public"]["Enums"]["speaker_type"]
           user_id: string
@@ -122,6 +124,7 @@ export interface Database {
           created_at?: string
           debate_id?: string
           id?: string
+          model?: string | null
           order_number?: number
           speaker?: Database["public"]["Enums"]["speaker_type"]
           user_id?: string

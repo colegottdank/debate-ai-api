@@ -202,6 +202,7 @@ async function handleAIInitiates(debateContext: DebateContext, messages: CreateC
 	return new Response(aiResponse, {
 		headers: {
 			'Content-Type': 'application/octet-stream',
+			'DebateAI-Turn-Model': debateContext.model,
 		},
 	});
 }
@@ -224,6 +225,7 @@ async function handleUserContinues(debateContext: DebateContext, messages: Creat
 	return new Response(aiResponse, {
 		headers: {
 			'Content-Type': 'application/octet-stream',
+			'DebateAI-Turn-Model': debateContext.model,
 		},
 	});
 }
@@ -252,6 +254,7 @@ async function handleAIForUser(debateContext: DebateContext, messages: CreateCha
 	return new Response(aiUserResponse, {
 		headers: {
 			'Content-Type': 'application/octet-stream',
+			'DebateAI-Turn-Model': debateContext.model,
 		},
 	});
 }
@@ -266,6 +269,7 @@ async function handlerAIContinues(debateContext: DebateContext, messages: Create
 	return new Response(aiResponse, {
 		headers: {
 			'Content-Type': 'application/octet-stream',
+			'DebateAI-Turn-Model': debateContext.model,
 		},
 	});
 }

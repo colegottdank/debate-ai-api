@@ -11,8 +11,11 @@ import Stripe from 'stripe';
 
 export const { preflight, corsify } = createCors({
 	origins: ['*'],
-	methods: ['OPTIONS'],
-	headers: ['authorization, x-client-info, apikey, content-type'],
+	methods: ['OPTIONS', 'POST', 'GET', 'PUT', 'DELETE'],
+	headers: {
+		'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, debateai-turn-model',
+		'Access-Control-Expose-Headers': 'debateai-turn-model',
+	},
 });
 
 const roleLookup: Record<string, 'function' | 'user' | 'system' | 'assistant'> = {

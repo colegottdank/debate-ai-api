@@ -3,6 +3,7 @@ import { IRequest, json } from 'itty-router';
 import { Database } from './database.types';
 import apiRouter, { corsify } from './router';
 import stripeRouter from './stripeRouter';
+import { DbWrapper } from './DbWrapper';
 
 export interface Env {
 	HELICONE_API_KEY: string;
@@ -25,6 +26,7 @@ export type RequestWrapper = {
 	env: Env;
 	ctx: ExecutionContext;
 	supabaseClient: SupabaseClient<Database>;
+	db: DbWrapper;
 	user: User | null;
 	profile: Database['public']['Tables']['profiles']['Row'];
 	parsedUrl: URL;
@@ -37,6 +39,7 @@ export default {
 			let requestWrapper = request as RequestWrapper;
 			requestWrapper.env = env;
 			requestWrapper.supabaseClient = createClient<Database>(env.SUPABASE_URL ?? '', env.SUPABASE_KEY ?? '');
+			requestWrapper.db = new DbWrapper(requestWrapper.supabaseClient);
 			requestWrapper.parsedUrl = url;
 			requestWrapper.ctx = ctx;
 
@@ -49,15 +52,23 @@ export default {
 				.then(json)
 				.catch((error: any) => {
 					console.error('Error encountered:', error);
-					return new Response(error.message, {
-						status: error.status || 500,
-						headers: corsHeaders,
-					});
+					return new Response(
+						JSON.stringify({
+							error: {
+								message: error.message,
+								status: error.status || 500,
+							},
+						}),
+						{
+							status: error.status || 500,
+							headers: corsHeaders,
+						}
+					);
 				})
 				.then(corsify);
 		} catch (error: any) {
 			console.error('Error encountered:', error);
-			return new Response(error.message, {
+			return new Response(JSON.stringify({ error: { message: error.message, status: error.status || 500 } }), {
 				status: error.status || 500,
 				headers: corsHeaders,
 			});

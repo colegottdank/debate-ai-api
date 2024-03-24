@@ -1,13 +1,14 @@
 import { Router, createCors, error } from 'itty-router';
 import { Env, RequestWrapper } from './worker';
-import { freeModels, gpt35, gpt3516k, gpt4, maxTokensLookup, validModels } from './models';
-import { Database } from './database.types';
-import { User } from '@supabase/supabase-js';
-import OpenAI from 'openai';
+import { FunctionModel, Model } from './models';
 import { CreateChatCompletionRequestMessage } from 'openai/resources/chat';
-import { DebateContext } from './DebateContext';
+import { DebateContext, Turn } from './DebateContext';
 import StripeServer from './StripeServer';
 import Stripe from 'stripe';
+import { createDebateTitleFunction as createDebateTitleFuncs, createDebateTitle as createDebateTitleMsgs } from './prompts/CreateDebate';
+import { OpenAIWrapper } from './OpenAIWrapper';
+import { determineModel } from './Util';
+import { turnSystemMessage } from './prompts/Turn';
 
 export const { preflight, corsify } = createCors({
 	origins: ['*'],
@@ -27,122 +28,70 @@ const roleLookup: Record<string, 'function' | 'user' | 'system' | 'assistant'> =
 const apiRouter = Router<RequestWrapper>();
 apiRouter.all('*', preflight);
 
-interface NewDebateRequest {
-	topic: string;
-	persona: string;
-	model: string;
-	userId: string;
-	heh: boolean;
-}
+// Create a new debate
+apiRouter.post('/v1/debate', authenticate, async (request: RequestWrapper) => {
+	const body = await request.json<{
+		topic: string;
+		persona: string;
+		model: Model | FunctionModel;
+		userId: string;
+	}>();
 
-apiRouter.post('/v1/debate', authenticate, async (request) => {
-	const body = await request.json<NewDebateRequest>();
 	if (!body.userId && !request.user) throw new Error('User not found');
 
-	const model = body.heh ? body.model : validateModel(body.model, request.user, request.profile);
+	const model = determineModel(body.model, request.user, request.profile);
+	const openai = new OpenAIWrapper(request.env.OPENAI_API_KEY, undefined, request.env.HELICONE_API_KEY);
 
-	const messages: CreateChatCompletionRequestMessage[] = [
-		{
-			role: 'system',
-			content:
-				"Create a debate name based on the topic. For example, if someone says 'Dogs are better than cats' then the debate name could be 'dogs vs cats'. Always keep it short and simple.",
-		},
-		{
-			role: 'user',
-			content: `Debate topic: ${body.topic}`,
-		},
-		{
-			role: 'assistant',
-			content: `Ok, I will not give you a short name for the debate without any other characters or quotes: ${body.topic}.`,
-		},
-	];
-
-	const debateId = crypto.randomUUID();
-
-	const openai = new OpenAI({
-		apiKey: request.env.OPENAI_API_KEY,
-		baseURL: 'https://oai.hconeai.com/v1',
-		defaultHeaders: {
-			'Helicone-Auth': 'Bearer ' + request.env.HELICONE_API_KEY,
-			'Helicone-Property-DebateId': debateId,
-			'Helicone-User-Id': request.user?.id ?? body.userId,
-		},
+	const titleResult = await openai.call<{ debateTitle: string }>(createDebateTitleMsgs(body.topic), createDebateTitleFuncs(), model, {
+		'Helicone-Property-DebateId': crypto.randomUUID(),
+		'Helicone-User-Id': body.userId,
 	});
 
-	let gpt_tokenizer = await import('gpt-tokenizer');
-	const tokens = gpt_tokenizer.encode(JSON.stringify(messages));
-	const maxTokens = maxTokensLookup[gpt35] - tokens.length;
-	const result = await openai.chat.completions.create({
-		model: gpt4,
-		messages: messages,
-		max_tokens: maxTokens,
+	const newDebate = await request.db.createDebate({
+		topic: body.topic,
+		short_topic: cleanContent(titleResult.debateTitle ?? body.topic),
+		persona: body.persona,
+		model: model,
+		user_id: request.user?.id ?? body.userId,
 	});
 
-	const newDebate = await request.supabaseClient
-		.from('debates')
-		.insert({
-			topic: body.topic,
-			short_topic: cleanContent(result.choices[0].message?.content ?? body.topic),
-			persona: body.persona,
-			model: model,
-			user_id: request.user?.id ?? body.userId,
-		})
-		.select('*')
-		.single();
+	return newDebate;
 
-	if (newDebate.error) throw new Error(`Error occurred inserting new debate: ${newDebate.error.message}`);
-	if (!newDebate.data) throw new Error('Debate not found');
+	function cleanContent(content: string): string {
+		// Remove quotes at the beginning and end
+		content = content.replace(/^["']|["']$/g, '');
 
-	return newDebate.data;
+		// Remove "Debate Name: " prefix if it exists
+		content = content.replace(/^Debate Name: /, '');
+
+		return content.trim();
+	}
 });
-
-function cleanContent(content: string): string {
-	// Remove quotes at the beginning and end
-	content = content.replace(/^["']|["']$/g, '');
-
-	// Remove "Debate Name: " prefix if it exists
-	content = content.replace(/^Debate Name: /, '');
-
-	return content.trim();
-}
 
 /* ------------------------------- Turn --------------------------------- */
 
 apiRouter.post('/v1/debate/:id/turn', authenticate, async (request) => {
 	const debateContext = await DebateContext.create(request, request.params.id);
-	const model = await debateContext.validate();
 
-	// Prepend a system message to turns.data
-	const messages: CreateChatCompletionRequestMessage[] = [
-		{
-			role: 'system',
-			content: `You are engaged in a debate about ${debateContext.debate.short_topic}. You are debating in the style of ${debateContext.debate.persona}.
-			You are taking the opposing side of the debate against the user.
-			Focus on the debate topic and avoid going off-topic.
-			Ensure the debate arguments are sounds, quality arguments like a professional debater.
-			Always get to the point
-			Each argument should be a single paragraph.
-			You will not repeat or acknowledge the user's argument, you will instead go directly into your counter argument.`,
-		},
-	];
+	const messages: CreateChatCompletionRequestMessage[] = turnSystemMessage(debateContext.debate.short_topic, debateContext.debate.persona);
 
 	// Check if there are existing turns
 	const hasTurns = debateContext.turns && debateContext.turns.length > 0;
 
 	// Case 1: AI Initiates Debate
-	if (!hasTurns && debateContext.turnRequest.speaker === 'AI') {
+	if (!hasTurns && debateContext.turn.speaker === 'AI') {
 		return await handleAIInitiates(debateContext, messages);
 	}
 
 	// Case 2: User Initiates Debate
-	if (!hasTurns && debateContext.turnRequest.speaker === 'user') {
-		if (!debateContext.turnRequest.argument) throw new Error('Argument not found');
+	if (!hasTurns && debateContext.turn.speaker === 'user') {
+		if (!debateContext.turn.argument) throw new Error('Argument not found');
 		return await handleUserContinues(debateContext, messages);
 	}
 
 	// Case 3: Debate Continues: User Provides Argument
-	if (hasTurns && debateContext.turnRequest.speaker === 'user') {
-		if (!debateContext.turnRequest.argument) throw new Error('Argument not found');
+	if (hasTurns && debateContext.turn.speaker === 'user') {
+		if (!debateContext.turn.argument) throw new Error('Argument not found');
 		debateContext.turns?.map((turn) => {
 			const role = roleLookup[turn.speaker];
 
@@ -157,7 +106,7 @@ apiRouter.post('/v1/debate/:id/turn', authenticate, async (request) => {
 	}
 
 	// Case 4: AI Responds on User's Behalf
-	if (debateContext.turnRequest.speaker === 'AI_for_user') {
+	if (debateContext.turn.speaker === 'AI_for_user') {
 		debateContext.turns?.map((turn) => {
 			const role = roleLookup[turn.speaker];
 
@@ -172,7 +121,7 @@ apiRouter.post('/v1/debate/:id/turn', authenticate, async (request) => {
 	}
 
 	// Case 5: Debate Continues: AI Provides Argument
-	if (hasTurns && debateContext.turnRequest.speaker === 'AI') {
+	if (hasTurns && debateContext.turn.speaker === 'AI') {
 		debateContext.turns?.map((turn) => {
 			const role = roleLookup[turn.speaker];
 
@@ -200,7 +149,7 @@ async function handleAIInitiates(debateContext: DebateContext, messages: CreateC
 		content: `Ok, I will start the debate about ${debateContext.debate.short_topic} while remaining in the style of ${debateContext.debate.persona}!`,
 	});
 
-	const aiResponse = await getAIResponse(messages, debateContext, 'AI', 1);
+	const aiResponse = await callStream(messages, debateContext, 'AI', 1);
 
 	return new Response(aiResponse, {
 		headers: {
@@ -211,11 +160,11 @@ async function handleAIInitiates(debateContext: DebateContext, messages: CreateC
 }
 
 async function handleUserContinues(debateContext: DebateContext, messages: CreateChatCompletionRequestMessage[]) {
-	await insertTurn(debateContext, debateContext.turnRequest.argument, 'user', (debateContext.turns?.length ?? 0) + 1);
+	await insertTurn(debateContext, debateContext.turn.argument, 'user', (debateContext.turns?.length ?? 0) + 1);
 
 	messages.push({
 		role: 'user',
-		content: debateContext.turnRequest.argument,
+		content: debateContext.turn.argument,
 	});
 
 	messages.push({
@@ -223,7 +172,7 @@ async function handleUserContinues(debateContext: DebateContext, messages: Creat
 		content: `Ok, I will now give a response to the user's argument about ${debateContext.debate.short_topic} while remaining in the style of ${debateContext.debate.persona}! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user!`,
 	});
 
-	const aiResponse = await getAIResponse(messages, debateContext, 'AI', (debateContext.turns?.length ?? 0) + 2);
+	const aiResponse = await callStream(messages, debateContext, 'AI', (debateContext.turns?.length ?? 0) + 2);
 
 	return new Response(aiResponse, {
 		headers: {
@@ -252,7 +201,7 @@ async function handleAIForUser(debateContext: DebateContext, messages: CreateCha
 		content: `I will now go directly into my counter argument to the user's argument about ${debateContext.debate.short_topic}! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user!`,
 	});
 
-	const aiUserResponse = await getAIResponse(reversedMessages, debateContext, 'AI_for_user', (debateContext.turns?.length ?? 0) + 1);
+	const aiUserResponse = await callStream(reversedMessages, debateContext, 'AI_for_user', (debateContext.turns?.length ?? 0) + 1);
 
 	return new Response(aiUserResponse, {
 		headers: {
@@ -267,7 +216,7 @@ async function handlerAIContinues(debateContext: DebateContext, messages: Create
 		role: 'assistant',
 		content: `I will now go directly into my counter argument to the user's argument about ${debateContext.debate.short_topic} while remaining in the style of ${debateContext.debate.persona}!! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user!`,
 	});
-	const aiResponse = await getAIResponse(messages, debateContext, 'AI', (debateContext.turns?.length ?? 0) + 1);
+	const aiResponse = await callStream(messages, debateContext, 'AI', (debateContext.turns?.length ?? 0) + 1);
 
 	return new Response(aiResponse, {
 		headers: {
@@ -297,57 +246,9 @@ function reverseRoles(messages: CreateChatCompletionRequestMessage[]): CreateCha
 	});
 }
 
-async function getAIResponse(
-	messages: CreateChatCompletionRequestMessage[],
-	debateContext: DebateContext,
-	speaker: 'user' | 'AI' | 'AI_for_user',
-	orderNumber: number
-): Promise<ReadableStream> {
-	const openai = new OpenAI({
-		apiKey: debateContext.request.env.OPENAI_API_KEY,
-		baseURL: 'https://oai.hconeai.com/v1',
-		defaultHeaders: {
-			'Helicone-Auth': `Bearer ${debateContext.request.env.HELICONE_API_KEY}`,
-			'Helicone-Property-DebateId': debateContext.turnRequest.debateId,
-			'Helicone-User-Id': debateContext.userId,
-		},
-	});
-
-	let gpt_tokenizer = await import('gpt-tokenizer');
-	const tokens = gpt_tokenizer.encode(JSON.stringify(messages));
-	const maxTokens = maxTokensLookup[debateContext.model] - tokens.length;
-	if (maxTokens < 50) throw new Error('Not enough tokens to generate response');
-	const result = await openai.chat.completions.create({
-		model: debateContext.model,
-		messages: messages,
-		max_tokens: maxTokens,
-		stream: true,
-	});
-
-	let { readable, writable } = new TransformStream();
-
-	let writer = writable.getWriter();
-	const textEncoder = new TextEncoder();
-	let allContent = ''; // Store all chunks
-
-	(async () => {
-		for await (const part of result) {
-			const partContent = part.choices[0]?.delta?.content || '';
-			allContent += partContent; // Add to the stored content
-			await writer.write(textEncoder.encode(partContent));
-		}
-
-		debateContext.request.ctx.waitUntil(
-			(async () => {
-				await insertTurn(debateContext, allContent, speaker, orderNumber);
-				await writer.close();
-			})()
-		);
-	})();
-
-	return readable;
-}
-
+// ###################################################################################
+// ################################## Stripe #####################################
+// ###################################################################################
 apiRouter.post('/v1/stripe/create-checkout-session', authenticateStripe, async (request) => {
 	try {
 		const stripe = StripeServer.getInstance(request.env);
@@ -508,18 +409,4 @@ async function authenticateStripe(request: RequestWrapper, env: Env): Promise<vo
 	request.user = user.data.user;
 }
 
-function validateModel(model: string, user: User | null, profile: Database['public']['Tables']['profiles']['Row']): string {
-	if (!validModels.includes(model)) {
-		console.error('Not a valid model, defaulted to gpt-3.5-turbo 16k');
-		return gpt3516k;
-	}
-
-	if (freeModels.includes(model)) return model;
-
-	// If the user is on their free trial, return the model
-	if (user && profile && profile.plan == `free` && profile.pro_trial_count < 5) return model;
-
-	if (!user || !profile?.plan || profile.plan != 'pro') return gpt3516k;
-
-	return model;
-}
+// Assuming the previous definitions are in scope...

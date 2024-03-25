@@ -7,7 +7,7 @@ import OpenAI from 'openai';
 import { DebateContext } from './DebateContext';
 import StripeServer from './StripeServer';
 import Stripe from 'stripe';
-import { ChatCompletionMessageParam, ChatCompletionRole, CreateChatCompletionRequestMessage } from 'openai/resources/chat/completions';
+import { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
 export const { preflight, corsify } = createCors({
 	origins: ['*'],
@@ -129,17 +129,12 @@ apiRouter.post('/v1/debate/:id/turn', authenticate, async (request) => {
 		{
 			role: 'system',
 			content: `You are participating in a structured debate on the topic '${debateContext.debate.short_topic}', adopting the debating style of '${debateContext.debate.persona}'. Your role is to present the counter-perspective against the user's stance. It's crucial to adhere to the following guidelines to maintain the debate's integrity and effectiveness:
-
-			Stay On-Topic: Concentrate exclusively on the debate subject. Any deviation from the central topic should be avoided to maintain focus and relevance.
-			
-			Clarity and Conciseness: Your responses should be clear and to the point. Each counter-argument you present must be contained within a single, well-structured paragraph, ensuring that your points are communicated effectively and succinctly.
-			
-			Quality of Argumentation: As a professional debater, your arguments should be logical, well-reasoned, and backed by evidence or strong reasoning. The quality of your argumentation is paramount, reflecting depth of thought and understanding of the topic.
-			
-			Direct Counter-Arguments: Do not repeat or explicitly acknowledge the user's argument. Instead, immediately present your counter-argument. This approach maintains the debate's pace and focuses on providing new insights and perspectives.
-			
-			Avoid Repetition: Ensure that your counter-arguments are fresh and provide new value to the debate. Reiterating the same points or getting stuck on a single aspect detracts from the debate's progression and richness.
-			
+			- Stay On-Topic: Concentrate exclusively on the debate subject. Any deviation from the central topic should be avoided to maintain focus and relevance.
+			- Clarity and Conciseness: Your responses should be clear and to the point. Each counter-argument you present must be contained within a single, well-structured paragraph, ensuring that your points are communicated effectively and succinctly.
+			- Quality of Argumentation: As a professional debater, your arguments should be logical, well-reasoned, and backed by evidence or strong reasoning. The quality of your argumentation is paramount, reflecting depth of thought and understanding of the topic.
+			- Direct Counter-Arguments: Do not repeat or explicitly acknowledge the user's argument. Instead, immediately present your counter-argument. This approach maintains the debate's pace and focuses on providing new insights and perspectives.
+			- Avoid Repetition: Ensure that your counter-arguments are fresh and provide new value to the debate. Reiterating the same points or getting stuck on a single aspect detracts from the debate's progression and richness.
+			- Researcher: Provide evidence, examples, and references to support your counter-arguments. This strengthens your position and adds credibility to your points.
 			Your goal is to enrich the debate by introducing diverse viewpoints and robust counterpoints, fostering a dynamic and insightful exchange.`,
 		},
 	];
@@ -210,10 +205,10 @@ async function handleAIInitiates(debateContext: DebateContext, messages: ChatCom
 		content: `${debateContext.debate.persona}, you start the debate about ${debateContext.debate.short_topic}!`,
 	});
 
-	// messages.push({
-	// 	role: 'assistant',
-	// 	content: `Ok, I will start the debate about ${debateContext.debate.short_topic} while remaining in the style of ${debateContext.debate.persona}!`,
-	// });
+	messages.push({
+		role: 'assistant',
+		content: `Ok, I will start the debate about ${debateContext.debate.short_topic} while remaining in the style of ${debateContext.debate.persona}!`,
+	});
 
 	const aiResponse = await getAIResponse(messages, debateContext, 'AI', 1);
 
@@ -233,10 +228,10 @@ async function handleUserContinues(debateContext: DebateContext, messages: ChatC
 		content: debateContext.turnRequest.argument,
 	});
 
-	// messages.push({
-	// 	role: 'assistant',
-	// 	content: `Ok, I will now give a response to the user's argument about ${debateContext.debate.short_topic} while remaining in the style of ${debateContext.debate.persona}! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user!`,
-	// });
+	messages.push({
+		role: 'assistant',
+		content: `Ok, I will now give a response to the user's argument about ${debateContext.debate.short_topic} while remaining in the style of ${debateContext.debate.persona}! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user without repeating myself!`,
+	});
 
 	const aiResponse = await getAIResponse(messages, debateContext, 'AI', (debateContext.turns?.length ?? 0) + 2);
 
@@ -254,18 +249,19 @@ async function handleAIForUser(debateContext: DebateContext, messages: ChatCompl
 	const systemMessage = reversedMessages.find((message) => message.role === 'system');
 	if (systemMessage) {
 		systemMessage.content = `You are participating in a structured debate on the topic '${debateContext.debate.short_topic}', you're debating against '${debateContext.debate.persona}'. Your role is to present the counter-perspective against the user's stance. It's crucial to adhere to the following guidelines to maintain the debate's integrity and effectiveness:
-		Stay On-Topic: Concentrate exclusively on the debate subject. Any deviation from the central topic should be avoided to maintain focus and relevance.
-		Clarity and Conciseness: Your responses should be clear and to the point. Each counter-argument you present must be contained within a single, well-structured paragraph, ensuring that your points are communicated effectively and succinctly.
-		Quality of Argumentation: As a professional debater, your arguments should be logical, well-reasoned, and backed by evidence or strong reasoning. The quality of your argumentation is paramount, reflecting depth of thought and understanding of the topic.
-		Direct Counter-Arguments: Do not repeat or explicitly acknowledge the user's argument. Instead, immediately present your counter-argument. This approach maintains the debate's pace and focuses on providing new insights and perspectives.
-		Avoid Repetition: Ensure that your counter-arguments are fresh and provide new value to the debate. Reiterating the same points or getting stuck on a single aspect detracts from the debate's progression and richness.
+		- Stay On-Topic: Concentrate exclusively on the debate subject. Any deviation from the central topic should be avoided to maintain focus and relevance.
+		- Clarity and Conciseness: Your responses should be clear and to the point. Each counter-argument you present must be contained within a single, well-structured paragraph, ensuring that your points are communicated effectively and succinctly.
+		- Quality of Argumentation: As a professional debater, your arguments should be logical, well-reasoned, and backed by evidence or strong reasoning. The quality of your argumentation is paramount, reflecting depth of thought and understanding of the topic.
+		- Direct Counter-Arguments: Do not repeat or explicitly acknowledge the user's argument. Instead, immediately present your counter-argument. This approach maintains the debate's pace and focuses on providing new insights and perspectives.
+		- Avoid Repetition: Ensure that your counter-arguments are fresh and provide new value to the debate. Reiterating the same points or getting stuck on a single aspect detracts from the debate's progression and richness.
+		- Researcher: Provide evidence, examples, and references to support your counter-arguments. This strengthens your position and adds credibility to your points.
 		Your goal is to enrich the debate by introducing diverse viewpoints and robust counterpoints, fostering a dynamic and insightful exchange.`;
 	}
 
-	// reversedMessages.push({
-	// 	role: 'assistant',
-	// 	content: `I will now go directly into my counter argument to the user's argument about ${debateContext.debate.short_topic}! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user!`,
-	// });
+	reversedMessages.push({
+		role: 'assistant',
+		content: `I will now go directly into my counter argument to the user's argument about ${debateContext.debate.short_topic}! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user without repeating myself!`,
+	});
 
 	const aiUserResponse = await getAIResponse(reversedMessages, debateContext, 'AI_for_user', (debateContext.turns?.length ?? 0) + 1);
 
@@ -278,10 +274,10 @@ async function handleAIForUser(debateContext: DebateContext, messages: ChatCompl
 }
 
 async function handlerAIContinues(debateContext: DebateContext, messages: ChatCompletionMessageParam[]) {
-	// messages.push({
-	// 	role: 'assistant',
-	// 	content: `I will now go directly into my counter argument to the user's argument about ${debateContext.debate.short_topic} while remaining in the style of ${debateContext.debate.persona}!! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user!`,
-	// });
+	messages.push({
+		role: 'assistant',
+		content: `I will now go directly into my counter argument to the user's argument about ${debateContext.debate.short_topic} while remaining in the style of ${debateContext.debate.persona}!! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user without repeating myself!`,
+	});
 	const aiResponse = await getAIResponse(messages, debateContext, 'AI', (debateContext.turns?.length ?? 0) + 1);
 
 	return new Response(aiResponse, {

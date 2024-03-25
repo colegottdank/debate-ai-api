@@ -47,12 +47,14 @@ export class DebateContext {
 			.eq('debate_id', debateId)
 			.order('order_number', { ascending: true });
 
-		if (turns.error) throw new Error(turns.error.message);
+		if (turns.error) throw new Error(`Failed to fetch turns: ${turns.error.message}`);
 
 		const context = new DebateContext(request, turnRequest, debate.data, turns.data);
 
 		return context;
 	}
+
+	hasTurns = () => this.turns && this.turns.length > 0;
 
 	async validate() {
 		const model = this.turnRequest.model ?? this.debate.model;

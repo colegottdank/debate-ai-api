@@ -1,6 +1,6 @@
 import { Database } from './database.types';
 import { RequestWrapper } from './worker';
-import { freeModels, gpt3516k, validModels } from './models';
+import { freeModels, gpt3516k_0125, validModels } from './models';
 
 export interface TurnRequest {
 	userId: string;
@@ -17,7 +17,7 @@ export class DebateContext {
 	debate: Database['public']['Tables']['debates']['Row'];
 	turns: Database['public']['Tables']['turns']['Row'][] | undefined;
 	userId: string;
-	model: string = gpt3516k;
+	model: string = gpt3516k_0125;
 
 	private constructor(
 		request: RequestWrapper,
@@ -67,7 +67,7 @@ export class DebateContext {
 		// Validate model, if invalid, use default gpt3516k
 		if (!validModels.includes(model)) {
 			console.error(`Invalid model for debate ${this.turnRequest.debateId}: ${model}`);
-			this.model = gpt3516k;
+			this.model = gpt3516k_0125;
 			return;
 		}
 

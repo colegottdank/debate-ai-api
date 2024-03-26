@@ -1,6 +1,6 @@
 import { Router, createCors, error } from 'itty-router';
 import { Env, RequestWrapper } from './worker';
-import { freeModels, gpt35, gpt3516k, gpt3516k_0125, gpt4, maxTokensLookup, validModels } from './models';
+import { freeModels, gpt35, gpt3516k_0125, gpt4, maxTokensLookup, validModels } from './models';
 import { Database } from './database.types';
 import { User } from '@supabase/supabase-js';
 import OpenAI from 'openai';
@@ -539,7 +539,7 @@ async function authenticateStripe(request: RequestWrapper, env: Env): Promise<vo
 function validateModel(model: string, user: User | null, profile: Database['public']['Tables']['profiles']['Row']): string {
 	if (!validModels.includes(model)) {
 		console.error('Not a valid model, defaulted to gpt-3.5-turbo 16k');
-		return gpt3516k;
+		return gpt3516k_0125;
 	}
 
 	if (freeModels.includes(model)) return model;
@@ -547,7 +547,7 @@ function validateModel(model: string, user: User | null, profile: Database['publ
 	// If the user is on their free trial, return the model
 	if (user && profile && profile.plan == `free` && profile.pro_trial_count < 5) return model;
 
-	if (!user || !profile?.plan || profile.plan != 'pro') return gpt3516k;
+	if (!user || !profile?.plan || profile.plan != 'pro') return gpt3516k_0125;
 
 	return model;
 }

@@ -49,6 +49,7 @@ apiRouter.post('/v1/debate', authenticate, async (request) => {
 			'Helicone-Auth': 'Bearer ' + request.env.HELICONE_API_KEY,
 			'Helicone-Property-DebateId': debateId,
 			'Helicone-User-Id': request.user?.id ?? body.userId,
+			'Helicone-Moderations-Enabled': 'true',
 		},
 	});
 
@@ -325,6 +326,7 @@ async function getAIResponse(
 			'Helicone-Auth': `Bearer ${debateContext.request.env.HELICONE_API_KEY}`,
 			'Helicone-Property-DebateId': debateContext.turnRequest.debateId,
 			'Helicone-User-Id': debateContext.userId,
+			'Helicone-Moderations-Enabled': 'true',
 		},
 	});
 

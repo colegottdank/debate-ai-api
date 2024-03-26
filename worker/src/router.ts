@@ -49,41 +49,46 @@ apiRouter.post('/v1/debate', authenticate, async (request) => {
 			'Helicone-Auth': 'Bearer ' + request.env.HELICONE_API_KEY,
 			'Helicone-Property-DebateId': debateId,
 			'Helicone-User-Id': request.user?.id ?? body.userId,
+			'Helicone-Moderations-Enabled': 'true',
 		},
 	});
 
-	const response = await openai.chat.completions.create({
-		model: gpt3516k_0125,
-		messages: [
-			{
-				role: 'user',
-				content: `Please provide a short debate name for the topic: """${body.topic}"""`,
-			},
-		],
-		tools: [
-			{
-				type: 'function',
-				function: {
-					name: 'generate_short_debate_name',
-					description: 'Generate a short debate name based on a topic.',
-					parameters: {
-						type: 'object',
-						properties: {
-							topic: {
-								type: 'string',
-								description: 'The debate topic. Try to keep it around 3 words. Remove unnecessary words.',
+	const response = await openai.chat.completions
+		.create({
+			model: gpt3516k_0125,
+			messages: [
+				{
+					role: 'user',
+					content: `Please provide a short debate name for the topic: """${body.topic}"""`,
+				},
+			],
+			tools: [
+				{
+					type: 'function',
+					function: {
+						name: 'generate_short_debate_name',
+						description: 'Generate a short debate name based on a topic.',
+						parameters: {
+							type: 'object',
+							properties: {
+								topic: {
+									type: 'string',
+									description: 'The debate topic. Try to keep it around 3 words. Remove unnecessary words.',
+								},
 							},
+							required: ['topic'],
 						},
-						required: ['topic'],
 					},
 				},
-			},
-		],
-		max_tokens: 100,
-		tool_choice: 'auto',
-	});
+			],
+			max_tokens: 100,
+			tool_choice: 'auto',
+		})
+		.withResponse();
 
-	const messages = response.choices[0].message?.tool_calls?.[0].function.arguments;
+	if (response.response.status === 400) throw new Error('Request failed, flagged by moderations.');
+
+	const messages = response.data.choices[0].message?.tool_calls?.[0].function.arguments;
 
 	if (!messages) throw new Error('Messages not found');
 
@@ -321,6 +326,7 @@ async function getAIResponse(
 			'Helicone-Auth': `Bearer ${debateContext.request.env.HELICONE_API_KEY}`,
 			'Helicone-Property-DebateId': debateContext.turnRequest.debateId,
 			'Helicone-User-Id': debateContext.userId,
+			'Helicone-Moderations-Enabled': 'true',
 		},
 	});
 
@@ -328,12 +334,16 @@ async function getAIResponse(
 	const tokens = gpt_tokenizer.encode(JSON.stringify(messages));
 	const maxTokens = maxTokensLookup[debateContext.model] - tokens.length;
 	if (maxTokens < 50) throw new Error('Not enough tokens to generate response');
-	const result = await openai.chat.completions.create({
-		model: debateContext.model,
-		messages: messages,
-		max_tokens: maxTokens,
-		stream: true,
-	});
+	const result = await openai.chat.completions
+		.create({
+			model: debateContext.model,
+			messages: messages,
+			max_tokens: maxTokens,
+			stream: true,
+		})
+		.withResponse();
+
+	if (result.response.status === 400) throw new Error('Request failed, flagged by moderations.');
 
 	let { readable, writable } = new TransformStream();
 
@@ -342,7 +352,7 @@ async function getAIResponse(
 	let allContent = ''; // Store all chunks
 
 	(async () => {
-		for await (const part of result) {
+		for await (const part of result.data) {
 			const partContent = part.choices[0]?.delta?.content || '';
 			allContent += partContent; // Add to the stored content
 			await writer.write(textEncoder.encode(partContent));

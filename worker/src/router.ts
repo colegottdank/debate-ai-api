@@ -1,13 +1,13 @@
 import { Router, createCors, error } from 'itty-router';
 import { Env, RequestWrapper } from './worker';
-import { freeModels, gpt35, gpt3516k, gpt4, maxTokensLookup, validModels } from './models';
+import { freeModels, gpt35, gpt3516k, gpt3516k_0125, gpt4, maxTokensLookup, validModels } from './models';
 import { Database } from './database.types';
 import { User } from '@supabase/supabase-js';
 import OpenAI from 'openai';
-import { CreateChatCompletionRequestMessage } from 'openai/resources/chat';
 import { DebateContext } from './DebateContext';
 import StripeServer from './StripeServer';
 import Stripe from 'stripe';
+import { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
 export const { preflight, corsify } = createCors({
 	origins: ['*'],
@@ -17,8 +17,7 @@ export const { preflight, corsify } = createCors({
 		'Access-Control-Expose-Headers': 'debateai-turn-model',
 	},
 });
-
-const roleLookup: Record<string, 'function' | 'user' | 'system' | 'assistant'> = {
+const roleLookup: Record<string, 'system' | 'user' | 'assistant'> = {
 	user: 'user',
 	AI: 'assistant',
 	AI_for_user: 'user',
@@ -41,22 +40,6 @@ apiRouter.post('/v1/debate', authenticate, async (request) => {
 
 	const model = body.heh ? body.model : validateModel(body.model, request.user, request.profile);
 
-	const messages: CreateChatCompletionRequestMessage[] = [
-		{
-			role: 'system',
-			content:
-				"Create a debate name based on the topic. For example, if someone says 'Dogs are better than cats' then the debate name could be 'dogs vs cats'. Always keep it short and simple.",
-		},
-		{
-			role: 'user',
-			content: `Debate topic: ${body.topic}`,
-		},
-		{
-			role: 'assistant',
-			content: `Ok, I will not give you a short name for the debate without any other characters or quotes: ${body.topic}.`,
-		},
-	];
-
 	const debateId = crypto.randomUUID();
 
 	const openai = new OpenAI({
@@ -69,20 +52,49 @@ apiRouter.post('/v1/debate', authenticate, async (request) => {
 		},
 	});
 
-	let gpt_tokenizer = await import('gpt-tokenizer');
-	const tokens = gpt_tokenizer.encode(JSON.stringify(messages));
-	const maxTokens = maxTokensLookup[gpt35] - tokens.length;
-	const result = await openai.chat.completions.create({
-		model: gpt4,
-		messages: messages,
-		max_tokens: maxTokens,
+	const response = await openai.chat.completions.create({
+		model: gpt3516k_0125,
+		messages: [
+			{
+				role: 'user',
+				content: `Please provide a short debate name for the topic: """${body.topic}"""`,
+			},
+		],
+		tools: [
+			{
+				type: 'function',
+				function: {
+					name: 'generate_short_debate_name',
+					description: 'Generate a short debate name based on a topic.',
+					parameters: {
+						type: 'object',
+						properties: {
+							topic: {
+								type: 'string',
+								description: 'The debate topic. Try to keep it around 3 words. Remove unnecessary words.',
+							},
+						},
+						required: ['topic'],
+					},
+				},
+			},
+		],
+		max_tokens: 100,
+		tool_choice: 'auto',
 	});
+
+	const messages = response.choices[0].message?.tool_calls?.[0].function.arguments;
+
+	if (!messages) throw new Error('Messages not found');
+
+	// parse arguments into a result object (generate_debate_name) object
+	const result = JSON.parse(messages) as { topic: string };
 
 	const newDebate = await request.supabaseClient
 		.from('debates')
 		.insert({
 			topic: body.topic,
-			short_topic: cleanContent(result.choices[0].message?.content ?? body.topic),
+			short_topic: cleanContent(result.topic ?? body.topic),
 			persona: body.persona,
 			model: model,
 			user_id: request.user?.id ?? body.userId,
@@ -110,38 +122,36 @@ function cleanContent(content: string): string {
 
 apiRouter.post('/v1/debate/:id/turn', authenticate, async (request) => {
 	const debateContext = await DebateContext.create(request, request.params.id);
-	const model = await debateContext.validate();
+	await debateContext.validate();
 
 	// Prepend a system message to turns.data
-	const messages: CreateChatCompletionRequestMessage[] = [
+	const messages: ChatCompletionMessageParam[] = [
 		{
 			role: 'system',
-			content: `You are engaged in a debate about ${debateContext.debate.short_topic}. You are debating in the style of ${debateContext.debate.persona}.
-			You are taking the opposing side of the debate against the user.
-			Focus on the debate topic and avoid going off-topic.
-			Ensure the debate arguments are sounds, quality arguments like a professional debater.
-			Always get to the point
-			Each argument should be a single paragraph.
-			You will not repeat or acknowledge the user's argument, you will instead go directly into your counter argument.`,
+			content: `You are participating in a structured debate on the topic '${debateContext.debate.short_topic}', adopting the debating style of '${debateContext.debate.persona}'. Your role is to present the counter-perspective against the user's stance. It's crucial to adhere to the following guidelines to maintain the debate's integrity and effectiveness:
+			- Stay On-Topic: Concentrate exclusively on the debate subject. Any deviation from the central topic should be avoided to maintain focus and relevance.
+			- Clarity and Conciseness: Your responses should be clear and to the point. Each counter-argument you present must be contained within a single, well-structured paragraph, ensuring that your points are communicated effectively and succinctly.
+			- Quality of Argumentation: As a professional debater, your arguments should be logical, well-reasoned, and backed by evidence or strong reasoning. The quality of your argumentation is paramount, reflecting depth of thought and understanding of the topic.
+			- Direct Counter-Arguments: Do not repeat or explicitly acknowledge the user's argument. Instead, immediately present your counter-argument. This approach maintains the debate's pace and focuses on providing new insights and perspectives.
+			- Avoid Repetition: Ensure that your counter-arguments are fresh and provide new value to the debate. Reiterating the same points or getting stuck on a single aspect detracts from the debate's progression and richness.
+			- Researcher: Provide evidence, examples, and references to support your counter-arguments. This strengthens your position and adds credibility to your points.
+			Your goal is to enrich the debate by introducing diverse viewpoints and robust counterpoints, fostering a dynamic and insightful exchange.`,
 		},
 	];
 
-	// Check if there are existing turns
-	const hasTurns = debateContext.turns && debateContext.turns.length > 0;
-
 	// Case 1: AI Initiates Debate
-	if (!hasTurns && debateContext.turnRequest.speaker === 'AI') {
+	if (!debateContext.hasTurns() && debateContext.turnRequest.speaker === 'AI') {
 		return await handleAIInitiates(debateContext, messages);
 	}
 
 	// Case 2: User Initiates Debate
-	if (!hasTurns && debateContext.turnRequest.speaker === 'user') {
+	if (!debateContext.hasTurns() && debateContext.turnRequest.speaker === 'user') {
 		if (!debateContext.turnRequest.argument) throw new Error('Argument not found');
 		return await handleUserContinues(debateContext, messages);
 	}
 
 	// Case 3: Debate Continues: User Provides Argument
-	if (hasTurns && debateContext.turnRequest.speaker === 'user') {
+	if (debateContext.hasTurns() && debateContext.turnRequest.speaker === 'user') {
 		if (!debateContext.turnRequest.argument) throw new Error('Argument not found');
 		debateContext.turns?.map((turn) => {
 			const role = roleLookup[turn.speaker];
@@ -172,7 +182,7 @@ apiRouter.post('/v1/debate/:id/turn', authenticate, async (request) => {
 	}
 
 	// Case 5: Debate Continues: AI Provides Argument
-	if (hasTurns && debateContext.turnRequest.speaker === 'AI') {
+	if (debateContext.hasTurns() && debateContext.turnRequest.speaker === 'AI') {
 		debateContext.turns?.map((turn) => {
 			const role = roleLookup[turn.speaker];
 
@@ -189,7 +199,7 @@ apiRouter.post('/v1/debate/:id/turn', authenticate, async (request) => {
 	throw new Error('Invalid turn request');
 });
 
-async function handleAIInitiates(debateContext: DebateContext, messages: CreateChatCompletionRequestMessage[]) {
+async function handleAIInitiates(debateContext: DebateContext, messages: ChatCompletionMessageParam[]) {
 	messages.push({
 		role: 'user',
 		content: `${debateContext.debate.persona}, you start the debate about ${debateContext.debate.short_topic}!`,
@@ -210,7 +220,7 @@ async function handleAIInitiates(debateContext: DebateContext, messages: CreateC
 	});
 }
 
-async function handleUserContinues(debateContext: DebateContext, messages: CreateChatCompletionRequestMessage[]) {
+async function handleUserContinues(debateContext: DebateContext, messages: ChatCompletionMessageParam[]) {
 	await insertTurn(debateContext, debateContext.turnRequest.argument, 'user', (debateContext.turns?.length ?? 0) + 1);
 
 	messages.push({
@@ -220,7 +230,7 @@ async function handleUserContinues(debateContext: DebateContext, messages: Creat
 
 	messages.push({
 		role: 'assistant',
-		content: `Ok, I will now give a response to the user's argument about ${debateContext.debate.short_topic} while remaining in the style of ${debateContext.debate.persona}! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user!`,
+		content: `Ok, I will now give a response to the user's argument about ${debateContext.debate.short_topic} while remaining in the style of ${debateContext.debate.persona}! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user without repeating myself!`,
 	});
 
 	const aiResponse = await getAIResponse(messages, debateContext, 'AI', (debateContext.turns?.length ?? 0) + 2);
@@ -233,23 +243,24 @@ async function handleUserContinues(debateContext: DebateContext, messages: Creat
 	});
 }
 
-async function handleAIForUser(debateContext: DebateContext, messages: CreateChatCompletionRequestMessage[]) {
+async function handleAIForUser(debateContext: DebateContext, messages: ChatCompletionMessageParam[]) {
 	const reversedMessages = reverseRoles(messages);
 
 	const systemMessage = reversedMessages.find((message) => message.role === 'system');
 	if (systemMessage) {
-		systemMessage.content = `You are engaged in a debate about ${debateContext.debate.short_topic}. You are debating against ${debateContext.debate.persona}.
-			You are taking the opposing side of the debate against the user.
-			Focus on the debate topic and avoid going off-topic.
-			Ensure the debate arguments are sounds, quality arguments like a professional debater.
-			Always get to the point
-			Each argument should be a single paragraph.
-			You will not repeat or acknowledge the user's argument, you will instead go directly into your counter argument.`;
+		systemMessage.content = `You are participating in a structured debate on the topic '${debateContext.debate.short_topic}', you're debating against '${debateContext.debate.persona}'. Your role is to present the counter-perspective against the user's stance. It's crucial to adhere to the following guidelines to maintain the debate's integrity and effectiveness:
+		- Stay On-Topic: Concentrate exclusively on the debate subject. Any deviation from the central topic should be avoided to maintain focus and relevance.
+		- Clarity and Conciseness: Your responses should be clear and to the point. Each counter-argument you present must be contained within a single, well-structured paragraph, ensuring that your points are communicated effectively and succinctly.
+		- Quality of Argumentation: As a professional debater, your arguments should be logical, well-reasoned, and backed by evidence or strong reasoning. The quality of your argumentation is paramount, reflecting depth of thought and understanding of the topic.
+		- Direct Counter-Arguments: Do not repeat or explicitly acknowledge the user's argument. Instead, immediately present your counter-argument. This approach maintains the debate's pace and focuses on providing new insights and perspectives.
+		- Avoid Repetition: Ensure that your counter-arguments are fresh and provide new value to the debate. Reiterating the same points or getting stuck on a single aspect detracts from the debate's progression and richness.
+		- Researcher: Provide evidence, examples, and references to support your counter-arguments. This strengthens your position and adds credibility to your points.
+		Your goal is to enrich the debate by introducing diverse viewpoints and robust counterpoints, fostering a dynamic and insightful exchange.`;
 	}
 
 	reversedMessages.push({
 		role: 'assistant',
-		content: `I will now go directly into my counter argument to the user's argument about ${debateContext.debate.short_topic}! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user!`,
+		content: `I will now go directly into my counter argument to the user's argument about ${debateContext.debate.short_topic}! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user without repeating myself!`,
 	});
 
 	const aiUserResponse = await getAIResponse(reversedMessages, debateContext, 'AI_for_user', (debateContext.turns?.length ?? 0) + 1);
@@ -262,10 +273,10 @@ async function handleAIForUser(debateContext: DebateContext, messages: CreateCha
 	});
 }
 
-async function handlerAIContinues(debateContext: DebateContext, messages: CreateChatCompletionRequestMessage[]) {
+async function handlerAIContinues(debateContext: DebateContext, messages: ChatCompletionMessageParam[]) {
 	messages.push({
 		role: 'assistant',
-		content: `I will now go directly into my counter argument to the user's argument about ${debateContext.debate.short_topic} while remaining in the style of ${debateContext.debate.persona}!! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user!`,
+		content: `I will now go directly into my counter argument to the user's argument about ${debateContext.debate.short_topic} while remaining in the style of ${debateContext.debate.persona}!! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user without repeating myself!`,
 	});
 	const aiResponse = await getAIResponse(messages, debateContext, 'AI', (debateContext.turns?.length ?? 0) + 1);
 
@@ -288,8 +299,8 @@ async function insertTurn(debateContext: DebateContext, content: string, speaker
 	});
 }
 
-function reverseRoles(messages: CreateChatCompletionRequestMessage[]): CreateChatCompletionRequestMessage[] {
-	return messages.map((message) => {
+function reverseRoles(messages: ChatCompletionMessageParam[]): ChatCompletionMessageParam[] {
+	return messages.map((message: any) => {
 		return {
 			role: message.role === 'system' ? 'system' : message.role === 'user' ? 'assistant' : 'user',
 			content: message.content,
@@ -298,7 +309,7 @@ function reverseRoles(messages: CreateChatCompletionRequestMessage[]): CreateCha
 }
 
 async function getAIResponse(
-	messages: CreateChatCompletionRequestMessage[],
+	messages: ChatCompletionMessageParam[],
 	debateContext: DebateContext,
 	speaker: 'user' | 'AI' | 'AI_for_user',
 	orderNumber: number
@@ -419,7 +430,11 @@ apiRouter.post('/v1/stripe/create-checkout-session', authenticateStripe, async (
 
 apiRouter.post('/v1/stripe/create-portal-session', authenticateStripe, async (request) => {
 	try {
-		const profile = await request.supabaseClient.from('profiles').select('*').eq('id', request.user?.id).single();
+		const profile = await request.supabaseClient
+			.from('profiles')
+			.select('*')
+			.eq('id', request.user?.id ?? '')
+			.single();
 
 		if (profile.error || !profile.data) {
 			throw new Error(profile.error.message);
@@ -457,7 +472,10 @@ async function getStripeCustomer(request: RequestWrapper): Promise<Stripe.Custom
 				expand: ['subscriptions'],
 			});
 
-			await request.supabaseClient.from('profiles').update({ stripe_id: customer.id }).eq('id', request.user?.id);
+			await request.supabaseClient
+				.from('profiles')
+				.update({ stripe_id: customer.id })
+				.eq('id', request.user?.id ?? '');
 		} else {
 			customer = customers.data[0];
 		}

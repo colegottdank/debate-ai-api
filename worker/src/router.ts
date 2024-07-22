@@ -1,6 +1,6 @@
 import { Router, createCors, error } from 'itty-router';
 import { Env, RequestWrapper } from './worker';
-import { freeModels, gpt35, gpt3516k_0125, gpt4, maxTokensLookup, validModels } from './models';
+import { freeModels, gpt3516k_0125, gpt4o_mini, maxTokensLookup, validModels } from './models';
 import { Database } from './database.types';
 import { User } from '@supabase/supabase-js';
 import OpenAI from 'openai';
@@ -38,52 +38,62 @@ apiRouter.post('/v1/debate', authenticate, async (request) => {
 	const body = await request.json<NewDebateRequest>();
 	if (!body.userId && !request.user) throw new Error('User not found');
 
-	const model = body.heh ? body.model : validateModel(body.model, request.user, request.profile);
-
 	const debateId = crypto.randomUUID();
 
+	console.log(`Debate ID: ${debateId}`);
 	const openai = new OpenAI({
 		apiKey: request.env.OPENAI_API_KEY,
 		baseURL: 'https://oai.hconeai.com/v1',
 		defaultHeaders: {
 			'Helicone-Auth': 'Bearer ' + request.env.HELICONE_API_KEY,
-			'Helicone-Property-DebateId': debateId,
-			'Helicone-User-Id': request.user?.id ?? body.userId,
-			'Helicone-Moderations-Enabled': 'true',
 		},
 	});
 
 	const response = await openai.chat.completions
-		.create({
-			model: gpt3516k_0125,
-			messages: [
-				{
-					role: 'user',
-					content: `Please provide a short debate name for the topic: """${body.topic}"""`,
-				},
-			],
-			tools: [
-				{
-					type: 'function',
-					function: {
-						name: 'generate_short_debate_name',
-						description: 'Generate a short debate name based on a topic.',
-						parameters: {
-							type: 'object',
-							properties: {
-								topic: {
-									type: 'string',
-									description: 'The debate topic. Try to keep it around 3 words. Remove unnecessary words.',
+		.create(
+			{
+				model: gpt4o_mini,
+				messages: [
+					{ role: 'system', content: 'Generate a short, catchy debate title (2-4 words) for the given topic.' },
+
+					{
+						role: 'user',
+						content: `Generate a short, catchy debate name for the following topic: "${body.topic}"`,
+					},
+				],
+				tools: [
+					{
+						type: 'function',
+						function: {
+							name: 'generate_short_debate_name',
+							description: 'Generate a short, catchy debate name based on the given topic.',
+							parameters: {
+								type: 'object',
+								properties: {
+									topic: {
+										type: 'string',
+										description: 'The short debate name. It should be 2-4 words, catchy, and encapsulate the essence of the debate topic.',
+									},
 								},
+								required: ['topic'],
 							},
-							required: ['topic'],
 						},
 					},
+				],
+				max_tokens: 100,
+				tool_choice: 'auto',
+			},
+			{
+				headers: {
+					'Helicone-Property-DebateId': debateId,
+					'Helicone-User-Id': request.user?.id ?? body.userId,
+					'Helicone-Moderations-Enabled': 'true',
+					'Helicone-Session-Name': 'Debate',
+					'Helicone-Session-Path': '/debate',
+					'Helicone-Session-Id': debateId,
 				},
-			],
-			max_tokens: 100,
-			tool_choice: 'auto',
-		})
+			}
+		)
 		.withResponse();
 
 	if (response.response.status === 400) throw new Error('Request failed, flagged by moderations.');
@@ -98,16 +108,17 @@ apiRouter.post('/v1/debate', authenticate, async (request) => {
 	const newDebate = await request.supabaseClient
 		.from('debates')
 		.insert({
+			id: debateId,
 			topic: body.topic,
 			short_topic: cleanContent(result.topic ?? body.topic),
 			persona: body.persona,
-			model: model,
+			model: gpt4o_mini,
 			user_id: request.user?.id ?? body.userId,
 		})
 		.select('*')
 		.single();
 
-	if (newDebate.error) throw new Error(`Error occurred inserting new debate: ${newDebate.error.message}`);
+	if (newDebate.error) throw new Error(`Error occurred inserting new debate: ${JSON.stringify(newDebate.error)}`);
 	if (!newDebate.data) throw new Error('Debate not found');
 
 	return newDebate.data;
@@ -133,14 +144,14 @@ apiRouter.post('/v1/debate/:id/turn', authenticate, async (request) => {
 	const messages: ChatCompletionMessageParam[] = [
 		{
 			role: 'system',
-			content: `You are participating in a structured debate on the topic '${debateContext.debate.short_topic}', adopting the debating style of '${debateContext.debate.persona}'. Your role is to present the counter-perspective against the user's stance. It's crucial to adhere to the following guidelines to maintain the debate's integrity and effectiveness:
-			- Stay On-Topic: Concentrate exclusively on the debate subject. Any deviation from the central topic should be avoided to maintain focus and relevance.
-			- Clarity and Conciseness: Your responses should be clear and to the point. Each counter-argument you present must be contained within a single, well-structured paragraph, ensuring that your points are communicated effectively and succinctly.
-			- Quality of Argumentation: As a professional debater, your arguments should be logical, well-reasoned, and backed by evidence or strong reasoning. The quality of your argumentation is paramount, reflecting depth of thought and understanding of the topic.
-			- Direct Counter-Arguments: Do not repeat or explicitly acknowledge the user's argument. Instead, immediately present your counter-argument. This approach maintains the debate's pace and focuses on providing new insights and perspectives.
-			- Avoid Repetition: Ensure that your counter-arguments are fresh and provide new value to the debate. Reiterating the same points or getting stuck on a single aspect detracts from the debate's progression and richness.
-			- Researcher: Provide evidence, examples, and references to support your counter-arguments. This strengthens your position and adds credibility to your points.
-			Your goal is to enrich the debate by introducing diverse viewpoints and robust counterpoints, fostering a dynamic and insightful exchange.`,
+			content: `Embody ${debateContext.debate.persona} in a debate on '${debateContext.debate.short_topic}'. Adhere to:
+	1. Historical Accuracy: Use examples and language from ${debateContext.debate.persona}'s era.
+	2. Unique Perspective: Incorporate ${debateContext.debate.persona}'s expertise and views.
+	3. Concise Arguments: Present clear, logical points in brief paragraphs.
+	4. Direct Engagement: Address opponent's key points without restating them.
+	5. Relevant Metaphors: Use analogies from ${debateContext.debate.persona}'s field.
+	Avoid modern references. Craft concise, period-authentic arguments in ${debateContext.debate.persona}'s voice.
+	Keep all responses under 75 words.`,
 		},
 	];
 
@@ -207,15 +218,19 @@ apiRouter.post('/v1/debate/:id/turn', authenticate, async (request) => {
 async function handleAIInitiates(debateContext: DebateContext, messages: ChatCompletionMessageParam[]) {
 	messages.push({
 		role: 'user',
-		content: `${debateContext.debate.persona}, you start the debate about ${debateContext.debate.short_topic}!`,
+		content: `As ${debateContext.debate.persona}, start a brief debate on "${debateContext.debate.short_topic}". Provide a concise opening argument that:
+	1. Establishes your historical perspective.
+	2. Introduces 1-2 key points relevant to your era.
+	3. Uses a brief analogy from your expertise.
+	Keep all responses under 75 words.`,
 	});
 
-	messages.push({
-		role: 'assistant',
-		content: `Ok, I will start the debate about ${debateContext.debate.short_topic} while remaining in the style of ${debateContext.debate.persona}!`,
-	});
+	// messages.push({
+	// 	role: 'assistant',
+	// 	content: `Ok, I will start the debate about <helicone-prompt-input key="topic">${debateContext.debate.short_topic}</helicone-prompt-input> while remaining in the style of <helicone-prompt-input key="persona">${debateContext.debate.persona}</helicone-prompt-input>!`,
+	// });
 
-	const aiResponse = await getAIResponse(messages, debateContext, 'AI', 1);
+	const aiResponse = await getAIResponse(messages, debateContext, 'AI', 1, '/debate/turn', 'debate_ai_initiates');
 
 	return new Response(aiResponse, {
 		headers: {
@@ -230,15 +245,22 @@ async function handleUserContinues(debateContext: DebateContext, messages: ChatC
 
 	messages.push({
 		role: 'user',
-		content: debateContext.turnRequest.argument,
+		content: `<helicone-prompt-input key="argument">${debateContext.turnRequest.argument}</helicone-prompt-input>`,
 	});
 
-	messages.push({
-		role: 'assistant',
-		content: `Ok, I will now give a response to the user's argument about ${debateContext.debate.short_topic} while remaining in the style of ${debateContext.debate.persona}! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user without repeating myself!`,
-	});
+	// messages.push({
+	// 	role: 'assistant',
+	// 	content: `Ok, I will now give a response to the user's argument about <helicone-prompt-input key="topic">${debateContext.debate.short_topic}</helicone-prompt-input> while remaining in the style of <helicone-prompt-input key="persona">${debateContext.debate.persona}</helicone-prompt-input>! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user without repeating myself!`,
+	// });
 
-	const aiResponse = await getAIResponse(messages, debateContext, 'AI', (debateContext.turns?.length ?? 0) + 2);
+	const aiResponse = await getAIResponse(
+		messages,
+		debateContext,
+		'AI',
+		(debateContext.turns?.length ?? 0) + 2,
+		'/debate/turn',
+		'debate_user_continues'
+	);
 
 	return new Response(aiResponse, {
 		headers: {
@@ -253,22 +275,27 @@ async function handleAIForUser(debateContext: DebateContext, messages: ChatCompl
 
 	const systemMessage = reversedMessages.find((message) => message.role === 'system');
 	if (systemMessage) {
-		systemMessage.content = `You are participating in a structured debate on the topic '${debateContext.debate.short_topic}', you're debating against '${debateContext.debate.persona}'. Your role is to present the counter-perspective against the user's stance. It's crucial to adhere to the following guidelines to maintain the debate's integrity and effectiveness:
-		- Stay On-Topic: Concentrate exclusively on the debate subject. Any deviation from the central topic should be avoided to maintain focus and relevance.
-		- Clarity and Conciseness: Your responses should be clear and to the point. Each counter-argument you present must be contained within a single, well-structured paragraph, ensuring that your points are communicated effectively and succinctly.
-		- Quality of Argumentation: As a professional debater, your arguments should be logical, well-reasoned, and backed by evidence or strong reasoning. The quality of your argumentation is paramount, reflecting depth of thought and understanding of the topic.
-		- Direct Counter-Arguments: Do not repeat or explicitly acknowledge the user's argument. Instead, immediately present your counter-argument. This approach maintains the debate's pace and focuses on providing new insights and perspectives.
-		- Avoid Repetition: Ensure that your counter-arguments are fresh and provide new value to the debate. Reiterating the same points or getting stuck on a single aspect detracts from the debate's progression and richness.
-		- Researcher: Provide evidence, examples, and references to support your counter-arguments. This strengthens your position and adds credibility to your points.
-		Your goal is to enrich the debate by introducing diverse viewpoints and robust counterpoints, fostering a dynamic and insightful exchange.`;
+		systemMessage.content = `As a modern debater, argue against ${debateContext.debate.persona} on '${debateContext.debate.short_topic}'. Your task:
+1. Briefly acknowledge the historical context.
+2. Present a concise, opposing modern view.
+3. Directly counter one key point from their argument.
+4. Offer a new insight that challenges their perspective.
+Always take the opposite stance. Keep responses under 75 words.`;
 	}
 
-	reversedMessages.push({
-		role: 'assistant',
-		content: `I will now go directly into my counter argument to the user's argument about ${debateContext.debate.short_topic}! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user without repeating myself!`,
-	});
+	// reversedMessages.push({
+	// 	role: 'assistant',
+	// 	content: `I will now go directly into my counter argument to the user's argument about <helicone-prompt-input key="topic">${debateContext.debate.short_topic}</helicone-prompt-input>! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user without repeating myself!`,
+	// });
 
-	const aiUserResponse = await getAIResponse(reversedMessages, debateContext, 'AI_for_user', (debateContext.turns?.length ?? 0) + 1);
+	const aiUserResponse = await getAIResponse(
+		reversedMessages,
+		debateContext,
+		'AI_for_user',
+		(debateContext.turns?.length ?? 0) + 1,
+		'/debate/turn',
+		'debate_ai_for_user'
+	);
 
 	return new Response(aiUserResponse, {
 		headers: {
@@ -279,11 +306,18 @@ async function handleAIForUser(debateContext: DebateContext, messages: ChatCompl
 }
 
 async function handlerAIContinues(debateContext: DebateContext, messages: ChatCompletionMessageParam[]) {
-	messages.push({
-		role: 'assistant',
-		content: `I will now go directly into my counter argument to the user's argument about ${debateContext.debate.short_topic} while remaining in the style of ${debateContext.debate.persona}!! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user without repeating myself!`,
-	});
-	const aiResponse = await getAIResponse(messages, debateContext, 'AI', (debateContext.turns?.length ?? 0) + 1);
+	// messages.push({
+	// 	role: 'assistant',
+	// 	content: `I will now go directly into my counter argument to the user's argument about <helicone-prompt-input key="topic">${debateContext.debate.short_topic}</helicone-prompt-input> while remaining in the style of <helicone-prompt-input key="persona">${debateContext.debate.persona}</helicone-prompt-input>!! I will also keep it short, concise, and to the point! I will also take the opposing side of the debate against the user without repeating myself!`,
+	// });
+	const aiResponse = await getAIResponse(
+		messages,
+		debateContext,
+		'AI',
+		(debateContext.turns?.length ?? 0) + 1,
+		'/debate/turn',
+		'debate_ai_continues'
+	);
 
 	return new Response(aiResponse, {
 		headers: {
@@ -317,16 +351,24 @@ async function getAIResponse(
 	messages: ChatCompletionMessageParam[],
 	debateContext: DebateContext,
 	speaker: 'user' | 'AI' | 'AI_for_user',
-	orderNumber: number
+	orderNumber: number,
+	path: string,
+	promptId: string
 ): Promise<ReadableStream> {
+	console.log(`DebateID: ${debateContext.debate.id}`);
+
 	const openai = new OpenAI({
 		apiKey: debateContext.request.env.OPENAI_API_KEY,
 		baseURL: 'https://oai.hconeai.com/v1',
 		defaultHeaders: {
 			'Helicone-Auth': `Bearer ${debateContext.request.env.HELICONE_API_KEY}`,
-			'Helicone-Property-DebateId': debateContext.turnRequest.debateId,
+			'Helicone-Property-DebateId': debateContext.debate.id,
 			'Helicone-User-Id': debateContext.userId,
 			'Helicone-Moderations-Enabled': 'true',
+			'Helicone-Prompt-Id': promptId,
+			'Helicone-Session-Name': 'Debate',
+			'Helicone-Session-Path': path,
+			'Helicone-Session-Id': debateContext.debate.id,
 		},
 	});
 

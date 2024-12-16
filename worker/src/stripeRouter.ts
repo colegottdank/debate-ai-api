@@ -1,10 +1,15 @@
-import { Router } from 'itty-router';
-import { RequestWrapper } from './worker';
+import { AutoRouter } from 'itty-router';
 import StripeServer from './StripeServer';
 
-const stripeRouter = Router<RequestWrapper>();
+const stripeRouter = AutoRouter({
+	base: '/v1/stripe',
+	catch: (error) => {
+		console.error('Error:', error);
+		return Response.json({ error: error.message || 'An unexpected error occurred' }, { status: error.status || 500 });
+	},
+});
 
-stripeRouter.post('/v1/stripe/webhooks', async (request) => {
+stripeRouter.post('/webhooks', async (request) => {
 	const stripe = StripeServer.getInstance(request.env);
 	const bodyText = await request.text();
 	let body: { [key: string]: any } = JSON.parse(bodyText);
@@ -78,4 +83,7 @@ stripeRouter.post('/v1/stripe/webhooks', async (request) => {
 	}
 });
 
-export default stripeRouter;
+export default {
+	...stripeRouter,
+	handle: stripeRouter.handle,
+};

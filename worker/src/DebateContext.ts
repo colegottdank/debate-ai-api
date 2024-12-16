@@ -1,6 +1,6 @@
 import { Database } from './database.types';
 import { RequestWrapper } from './worker';
-import { freeModels, gpt3516k_0125, validModels } from './models';
+import { gpt4omini } from './models';
 
 export interface TurnRequest {
 	userId: string;
@@ -17,7 +17,7 @@ export class DebateContext {
 	debate: Database['public']['Tables']['debates']['Row'];
 	turns: Database['public']['Tables']['turns']['Row'][] | undefined;
 	userId: string;
-	model: string = gpt3516k_0125;
+	model: string = gpt4omini;
 
 	private constructor(
 		request: RequestWrapper,
@@ -33,7 +33,7 @@ export class DebateContext {
 	}
 
 	static async create(request: RequestWrapper, debateId: string): Promise<DebateContext> {
-		const turnRequest = await request.json<TurnRequest>();
+		const turnRequest = (await request.json()) as TurnRequest;
 		if (!turnRequest) throw new Error('Turn request not found');
 
 		const debate = await request.supabaseClient.from('debates').select('*').eq('id', debateId).single();
@@ -57,37 +57,11 @@ export class DebateContext {
 	hasTurns = () => this.turns && this.turns.length > 0;
 
 	async validate() {
-		const model = this.turnRequest.model ?? this.debate.model;
-
 		// Ensure user is available
 		if (!this.turnRequest.userId && !this.request.user) {
 			throw new Error('User not found');
 		}
 
-		// Validate model, if invalid, use default gpt3516k
-		if (!validModels.includes(model)) {
-			console.error(`Invalid model for debate ${this.turnRequest.debateId}: ${model}`);
-			this.model = gpt3516k_0125;
-			return;
-		}
-
-		// If the heh flag is set, simply return the model without further checks
-		if (this.turnRequest.heh) {
-			this.model = model;
-		}
-
-		// If user is using a free model, return the model
-		if (freeModels.includes(model)) {
-			this.model = model;
-		} // If the user is on their free trial, increment the pro_trial_count and return the model
-		else if (this.request.profile && (this.request.profile.pro_trial_count < 5 || this.request.profile.plan === 'pro')) {
-			await this.request.supabaseClient
-				.from('profiles')
-				.update({ pro_trial_count: this.request.profile.pro_trial_count + 1 })
-				.eq('id', this.request.profile.id);
-			this.model = model;
-		}
-
-		// Otherwise, use default gpt3516k
+		this.model = gpt4omini;
 	}
 }

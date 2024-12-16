@@ -1,30 +1,26 @@
-import { Router, createCors, error } from 'itty-router';
+import { AutoRouter } from 'itty-router';
 import { Env, RequestWrapper } from './worker';
-import { freeModels, gpt35, gpt3516k_0125, gpt4, maxTokensLookup, validModels } from './models';
-import { Database } from './database.types';
-import { User } from '@supabase/supabase-js';
+import { gpt4omini, gpt4ominiContextWindow, gpt4ominiMaxCompletionTokens } from './models';
 import OpenAI from 'openai';
 import { DebateContext } from './DebateContext';
 import StripeServer from './StripeServer';
 import Stripe from 'stripe';
 import { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
-export const { preflight, corsify } = createCors({
-	origins: ['*'],
-	methods: ['OPTIONS', 'POST', 'GET', 'PUT', 'DELETE'],
-	headers: {
-		'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, debateai-turn-model',
-		'Access-Control-Expose-Headers': 'debateai-turn-model',
+const apiRouter = AutoRouter({
+	base: '/v1',
+	before: [authenticate],
+	catch: (error) => {
+		console.error('Error:', error);
+		return Response.json({ error: error.message || 'An unexpected error occurred' }, { status: error.status || 500 });
 	},
 });
+
 const roleLookup: Record<string, 'system' | 'user' | 'assistant'> = {
 	user: 'user',
 	AI: 'assistant',
 	AI_for_user: 'user',
 };
-
-const apiRouter = Router<RequestWrapper>();
-apiRouter.all('*', preflight);
 
 interface NewDebateRequest {
 	topic: string;
@@ -34,17 +30,15 @@ interface NewDebateRequest {
 	heh: boolean;
 }
 
-apiRouter.post('/v1/debate', authenticate, async (request) => {
-	const body = await request.json<NewDebateRequest>();
+apiRouter.post('/debate', authenticate, async (request) => {
+	const body = (await request.json()) as NewDebateRequest;
 	if (!body.userId && !request.user) throw new Error('User not found');
-
-	const model = body.heh ? body.model : validateModel(body.model, request.user, request.profile);
 
 	const debateId = crypto.randomUUID();
 
 	const openai = new OpenAI({
 		apiKey: request.env.OPENAI_API_KEY,
-		baseURL: 'https://oai.hconeai.com/v1',
+		baseURL: 'https://oai.helicone.ai/v1',
 		defaultHeaders: {
 			'Helicone-Auth': 'Bearer ' + request.env.HELICONE_API_KEY,
 			'Helicone-Property-DebateId': debateId,
@@ -52,65 +46,83 @@ apiRouter.post('/v1/debate', authenticate, async (request) => {
 			'Helicone-Moderations-Enabled': 'true',
 		},
 	});
-
-	const response = await openai.chat.completions
-		.create({
-			model: gpt3516k_0125,
-			messages: [
-				{
-					role: 'user',
-					content: `Please provide a short debate name for the topic: """${body.topic}"""`,
-				},
-			],
-			tools: [
-				{
-					type: 'function',
-					function: {
-						name: 'generate_short_debate_name',
-						description: 'Generate a short debate name based on a topic.',
-						parameters: {
-							type: 'object',
-							properties: {
-								topic: {
-									type: 'string',
-									description: 'The debate topic. Try to keep it around 3 words. Remove unnecessary words.',
+	try {
+		const response = await openai.chat.completions
+			.create({
+				model: gpt4omini,
+				messages: [
+					{
+						role: 'user',
+						content: `Please provide a short debate name for the topic: """${body.topic}"""`,
+					},
+				],
+				tools: [
+					{
+						type: 'function',
+						function: {
+							name: 'generate_short_debate_name',
+							description: 'Generate a short debate name based on a topic.',
+							parameters: {
+								type: 'object',
+								properties: {
+									topic: {
+										type: 'string',
+										description: 'The debate topic. Try to keep it around 3 words. Remove unnecessary words.',
+									},
 								},
+								required: ['topic'],
 							},
-							required: ['topic'],
 						},
 					},
-				},
-			],
-			max_tokens: 100,
-			tool_choice: 'auto',
-		})
-		.withResponse();
+				],
+				max_tokens: 100,
+				tool_choice: 'auto',
+			})
+			.withResponse();
 
-	if (response.response.status === 400) throw new Error('Request failed, flagged by moderations.');
+		if (response.response.status === 400) throw new Error('Request failed, flagged by moderations.');
+		if (response.response.status === 429) throw new Error('Rate limit exceeded');
+		if (response.response.status === 500) throw new Error('OpenAI server error - please try again');
 
-	const messages = response.data.choices[0].message?.tool_calls?.[0].function.arguments;
+		const messages = response.data.choices[0].message?.tool_calls?.[0].function.arguments;
 
-	if (!messages) throw new Error('Messages not found');
+		if (!messages) throw new Error('Messages not found');
 
-	// parse arguments into a result object (generate_debate_name) object
-	const result = JSON.parse(messages) as { topic: string };
+		// parse arguments into a result object (generate_debate_name) object
+		const result = JSON.parse(messages) as { topic: string };
 
-	const newDebate = await request.supabaseClient
-		.from('debates')
-		.insert({
-			topic: body.topic,
-			short_topic: cleanContent(result.topic ?? body.topic),
-			persona: body.persona,
-			model: model,
-			user_id: request.user?.id ?? body.userId,
-		})
-		.select('*')
-		.single();
+		const newDebate = await request.supabaseClient
+			.from('debates')
+			.insert({
+				topic: body.topic,
+				short_topic: cleanContent(result.topic ?? body.topic),
+				persona: body.persona,
+				model: gpt4omini,
+				user_id: request.user?.id ?? body.userId,
+			})
+			.select('*')
+			.single();
 
-	if (newDebate.error) throw new Error(`Error occurred inserting new debate: ${newDebate.error.message}`);
-	if (!newDebate.data) throw new Error('Debate not found');
+		if (newDebate.error) throw new Error(`Error occurred inserting new debate: ${newDebate.error.message}`);
+		if (!newDebate.data) throw new Error('Debate not found');
 
-	return newDebate.data;
+		return newDebate.data;
+	} catch (error: any) {
+		console.error('OpenAI Error:', {
+			status: error?.response?.status,
+			message: error?.message,
+			responseData: error?.response?.data,
+			fullError: error,
+		});
+
+		if (error?.message?.includes('exceeded your current quota')) {
+			return Response.json({ error: 'Service temporarily unavailable. Please try again later.' }, { status: 429 });
+		}
+
+		const status = error?.response?.status || 500;
+		const message = error?.message || 'An unexpected error occurred';
+		return Response.json({ error: message }, { status });
+	}
 });
 
 function cleanContent(content: string): string {
@@ -125,7 +137,7 @@ function cleanContent(content: string): string {
 
 /* ------------------------------- Turn --------------------------------- */
 
-apiRouter.post('/v1/debate/:id/turn', authenticate, async (request) => {
+apiRouter.post('/debate/:id/turn', authenticate, async (request) => {
 	const debateContext = await DebateContext.create(request, request.params.id);
 	await debateContext.validate();
 
@@ -300,7 +312,7 @@ async function insertTurn(debateContext: DebateContext, content: string, speaker
 		speaker: speaker,
 		content: content,
 		order_number: orderNumber,
-		model: debateContext.model,
+		model: gpt4omini,
 	});
 }
 
@@ -321,7 +333,7 @@ async function getAIResponse(
 ): Promise<ReadableStream> {
 	const openai = new OpenAI({
 		apiKey: debateContext.request.env.OPENAI_API_KEY,
-		baseURL: 'https://oai.hconeai.com/v1',
+		baseURL: 'https://oai.helicone.ai/v1',
 		defaultHeaders: {
 			'Helicone-Auth': `Bearer ${debateContext.request.env.HELICONE_API_KEY}`,
 			'Helicone-Property-DebateId': debateContext.turnRequest.debateId,
@@ -331,14 +343,27 @@ async function getAIResponse(
 	});
 
 	let gpt_tokenizer = await import('gpt-tokenizer');
-	const tokens = gpt_tokenizer.encode(JSON.stringify(messages));
-	const maxTokens = maxTokensLookup[debateContext.model] - tokens.length;
-	if (maxTokens < 50) throw new Error('Not enough tokens to generate response');
+	const inputTokens = gpt_tokenizer.encode(JSON.stringify(messages));
+
+	// Check if input is within context window
+	if (inputTokens.length > gpt4ominiContextWindow) {
+		throw new Error('Input exceeds maximum context window');
+	}
+
+	// Set max completion tokens (being conservative to ensure we stay within limits)
+	const maxCompletionTokens = Math.min(gpt4ominiMaxCompletionTokens, gpt4ominiContextWindow - inputTokens.length);
+
+	if (maxCompletionTokens < 50) {
+		throw new Error('Not enough tokens remaining for response');
+	}
+
+	console.log(`Model: ${gpt4omini}`);
+	console.log(`Max Tokens: ${maxCompletionTokens}`);
 	const result = await openai.chat.completions
 		.create({
-			model: debateContext.model,
+			model: gpt4omini,
 			messages: messages,
-			max_tokens: maxTokens,
+			max_tokens: maxCompletionTokens,
 			stream: true,
 		})
 		.withResponse();
@@ -369,7 +394,7 @@ async function getAIResponse(
 	return readable;
 }
 
-apiRouter.post('/v1/stripe/create-checkout-session', authenticateStripe, async (request) => {
+apiRouter.post('/stripe/create-checkout-session', authenticateStripe, async (request) => {
 	try {
 		const stripe = StripeServer.getInstance(request.env);
 
@@ -438,7 +463,7 @@ apiRouter.post('/v1/stripe/create-checkout-session', authenticateStripe, async (
 	}
 });
 
-apiRouter.post('/v1/stripe/create-portal-session', authenticateStripe, async (request) => {
+apiRouter.post('/stripe/create-portal-session', authenticateStripe, async (request) => {
 	try {
 		const profile = await request.supabaseClient
 			.from('profiles')
@@ -496,7 +521,7 @@ async function getStripeCustomer(request: RequestWrapper): Promise<Stripe.Custom
 }
 
 // 404 for everything else
-apiRouter.all('*', () => error(404));
+apiRouter.all('*', () => new Response('Not Found', { status: 404 }));
 
 export default apiRouter;
 
@@ -506,18 +531,26 @@ export default apiRouter;
 async function authenticate(request: RequestWrapper, env: Env): Promise<void> {
 	let token = request.headers.get('Authorization')?.replace('Bearer ', '');
 
-	const user = await request.supabaseClient.auth.getUser(token);
-
-	if (user.data && user.data.user) {
-		const profile = await request.supabaseClient.from('profiles').select('*').eq('id', user.data.user.id).single();
-
-		if (profile.error) throw new Error(profile.error.message);
-		if (!profile.data) throw new Error('Profile not found');
-
-		request.profile = profile.data;
+	// If token is undefined or invalid, continue as anonymous
+	if (!token || token === 'undefined') {
+		return;
 	}
 
-	request.user = user.data.user;
+	// Only try to authenticate if there's a valid token
+	try {
+		const user = await request.supabaseClient.auth.getUser(token);
+		if (user.data && user.data.user) {
+			const profile = await request.supabaseClient.from('profiles').select('*').eq('id', user.data.user.id).single();
+
+			if (profile.data) {
+				request.profile = profile.data;
+				request.user = user.data.user;
+			}
+		}
+	} catch (error) {
+		// If authentication fails, continue as anonymous
+		console.log('Authentication failed, continuing as anonymous');
+	}
 }
 
 async function authenticateStripe(request: RequestWrapper, env: Env): Promise<void> {
@@ -534,20 +567,4 @@ async function authenticateStripe(request: RequestWrapper, env: Env): Promise<vo
 
 	request.profile = profile.data;
 	request.user = user.data.user;
-}
-
-function validateModel(model: string, user: User | null, profile: Database['public']['Tables']['profiles']['Row']): string {
-	if (!validModels.includes(model)) {
-		console.error('Not a valid model, defaulted to gpt-3.5-turbo 16k');
-		return gpt3516k_0125;
-	}
-
-	if (freeModels.includes(model)) return model;
-
-	// If the user is on their free trial, return the model
-	if (user && profile && profile.plan == `free` && profile.pro_trial_count < 5) return model;
-
-	if (!user || !profile?.plan || profile.plan != 'pro') return gpt3516k_0125;
-
-	return model;
 }

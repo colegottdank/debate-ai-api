@@ -1,8 +1,17 @@
-import { SupabaseClient, User, createClient } from '@supabase/supabase-js';
-import { IRequest, json } from 'itty-router';
+import { AutoRouter, cors, IRequest } from 'itty-router';
 import { Database } from './database.types';
-import apiRouter, { corsify } from './router';
+import apiRouter from './router';
 import stripeRouter from './stripeRouter';
+import { createClient, SupabaseClient, User } from '@supabase/supabase-js';
+
+const { preflight, corsify } = cors({
+	origin: ['https://debateai.org', 'http://localhost:3000', 'https://www.debateai.org'],
+	allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+	allowHeaders: ['Content-Type', 'Authorization', 'debateai-turn-model'],
+	exposeHeaders: ['debateai-turn-model'],
+	maxAge: 86400,
+	credentials: true,
+});
 
 export interface Env {
 	HELICONE_API_KEY: string;
@@ -15,10 +24,12 @@ export interface Env {
 }
 
 const corsHeaders = {
-	'Access-Control-Allow-Origin': '*', // You can restrict it to specific domains
-	'Access-Control-Allow-Methods': 'POST, OPTIONS', // Allow only POST and OPTIONS
+	'Access-Control-Allow-Origin': 'https://debateai.org',
+	'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
 	'Access-Control-Max-Age': '86400',
-	'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+	'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+	'Access-Control-Expose-Headers': 'debateai-turn-model',
+	'Access-Control-Allow-Credentials': 'true',
 };
 
 export type RequestWrapper = {
@@ -31,7 +42,11 @@ export type RequestWrapper = {
 } & IRequest;
 
 export default {
-	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+	async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+		if (request.method === 'OPTIONS') {
+			return preflight(request);
+		}
+
 		try {
 			let url = new URL(request.url);
 			let requestWrapper = request as RequestWrapper;
@@ -40,27 +55,19 @@ export default {
 			requestWrapper.parsedUrl = url;
 			requestWrapper.ctx = ctx;
 
-			let router;
-			if (request.url.endsWith('/v1/stripe/webhooks')) router = stripeRouter;
-			else router = apiRouter;
+			const response = await (request.url.endsWith('/v1/stripe/webhooks')
+				? stripeRouter.fetch(requestWrapper)
+				: apiRouter.fetch(requestWrapper));
 
-			return router
-				.handle(requestWrapper)
-				.then(json)
-				.catch((error: any) => {
-					console.error('Error encountered:', error);
-					return new Response(error.message, {
-						status: error.status || 500,
-						headers: corsHeaders,
-					});
-				})
-				.then(corsify);
+			return corsify(response, request);
 		} catch (error: any) {
-			console.error('Error encountered:', error);
-			return new Response(error.message, {
-				status: error.status || 500,
-				headers: corsHeaders,
-			});
+			return corsify(
+				new Response(JSON.stringify({ error: error.message }), {
+					status: error.status || 500,
+					headers: { 'Content-Type': 'application/json' },
+				}),
+				request
+			);
 		}
 	},
 };

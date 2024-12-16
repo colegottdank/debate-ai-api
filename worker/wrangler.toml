@@ -10,9 +10,10 @@ SUPABASE_URL = "http://localhost:54321"
 # PRODUCTION
 [env.production]
 name = "debateai"
-workers_dev = false
+workers_dev = true
 
 [env.production.vars]
 ENVIRONMENT = "production"
 SUPABASE_URL = "https://ndtxtzhxrwcowynlbaez.supabase.co"
 FE_URL = "https://debateai.org"
+
